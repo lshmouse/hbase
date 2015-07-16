@@ -18,33 +18,36 @@
 package org.apache.hadoop.hbase.regionserver.compactions;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValueUtil;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.io.compress.Compression;
+import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.io.hfile.HFile.FileInfo;
-import org.apache.hadoop.hbase.io.hfile.HFileWriterV2;
 import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
 import org.apache.hadoop.hbase.regionserver.ScanType;
+import org.apache.hadoop.hbase.regionserver.ScannerContext;
 import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.regionserver.StoreFileScanner;
 import org.apache.hadoop.hbase.regionserver.StoreScanner;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.StringUtils.TraditionalBinaryPrefix;
 
 /**
  * A compactor is a compaction algorithm associated a given policy. Base class also contains
@@ -70,7 +73,7 @@ public abstract class Compactor {
     this.compactionKVMax =
       this.conf.getInt(HConstants.COMPACTION_KV_MAX, HConstants.COMPACTION_KV_MAX_DEFAULT);
     this.compactionCompression = (this.store.getFamily() == null) ?
-        Compression.Algorithm.NONE : this.store.getFamily().getCompactionCompression();
+        Compression.Algorithm.NONE : this.store.getFamily().getCompactionCompressionType();
     this.keepSeqIdPeriod = Math.max(this.conf.getInt(HConstants.KEEP_SEQID_PERIOD, 
       HConstants.MIN_KEEP_SEQID_PERIOD), HConstants.MIN_KEEP_SEQID_PERIOD);
   }
@@ -140,7 +143,7 @@ public abstract class Compactor {
         fd.maxMVCCReadpoint = Math.max(fd.maxMVCCReadpoint, r.getSequenceID());
       }
       else {
-        tmp = fileInfo.get(HFileWriterV2.MAX_MEMSTORE_TS_KEY);
+        tmp = fileInfo.get(HFile.Writer.MAX_MEMSTORE_TS_KEY);
         if (tmp != null) {
           fd.maxMVCCReadpoint = Math.max(fd.maxMVCCReadpoint, Bytes.toLong(tmp));
         }
@@ -167,7 +170,7 @@ public abstract class Compactor {
         LOG.debug("Compacting " + file +
           ", keycount=" + keyCount +
           ", bloomtype=" + r.getBloomFilterType().toString() +
-          ", size=" + StringUtils.humanReadableInt(r.length()) +
+          ", size=" + TraditionalBinaryPrefix.long2String(r.length(), "", 1) +
           ", encoding=" + r.getHFileReader().getDataBlockEncoding() +
           ", seqNum=" + seqNum +
           (allFiles ? ", earliestPutTs=" + earliestPutTs: ""));
@@ -220,15 +223,34 @@ public abstract class Compactor {
   }
 
   /**
+   * Used to prevent compaction name conflict when multiple compactions running parallel on the
+   * same store.
+   */
+  private static final AtomicInteger NAME_COUNTER = new AtomicInteger(0);
+
+  private String generateCompactionName() {
+    int counter;
+    for (;;) {
+      counter = NAME_COUNTER.get();
+      int next = counter == Integer.MAX_VALUE ? 0 : counter + 1;
+      if (NAME_COUNTER.compareAndSet(counter, next)) {
+        break;
+      }
+    }
+    return store.getRegionInfo().getRegionNameAsString() + "#"
+        + store.getFamily().getNameAsString() + "#" + counter;
+  }
+  /**
    * Performs the compaction.
    * @param scanner Where to read from.
    * @param writer Where to write to.
    * @param smallestReadPoint Smallest read point.
-   * @param cleanSeqId When true, remove seqId(used to be mvcc) value which is <= smallestReadPoint
+   * @param cleanSeqId When true, remove seqId(used to be mvcc) value which is &lt;= smallestReadPoint
    * @return Whether compaction ended; false if it was interrupted for some reason.
    */
-  protected boolean performCompaction(InternalScanner scanner,
-      CellSink writer, long smallestReadPoint, boolean cleanSeqId) throws IOException {
+  protected boolean performCompaction(InternalScanner scanner, CellSink writer,
+      long smallestReadPoint, boolean cleanSeqId,
+      CompactionThroughputController throughputController) throws IOException {
     long bytesWritten = 0;
     long bytesWrittenProgress = 0;
     // Since scanner.next() can return 'false' but still be delivering data,
@@ -239,49 +261,68 @@ public abstract class Compactor {
     if (LOG.isDebugEnabled()) {
       lastMillis = EnvironmentEdgeManager.currentTime();
     }
+    String compactionName = generateCompactionName();
     long now = 0;
     boolean hasMore;
-    do {
-      hasMore = scanner.next(cells, compactionKVMax);
-      if (LOG.isDebugEnabled()) {
-        now = EnvironmentEdgeManager.currentTime();
-      }
-      // output to writer:
-      for (Cell c : cells) {
-        if (cleanSeqId && c.getSequenceId() <= smallestReadPoint) {
-          CellUtil.setSequenceId(c, 0);
-        }
-        writer.append(c);
-        int len = KeyValueUtil.length(c);
-        ++progress.currentCompactedKVs;
-        progress.totalCompactedSize += len;
+    ScannerContext scannerContext =
+        ScannerContext.newBuilder().setBatchLimit(compactionKVMax).build();
+
+    throughputController.start(compactionName);
+    try {
+      do {
+        hasMore = scanner.next(cells, scannerContext);
         if (LOG.isDebugEnabled()) {
-          bytesWrittenProgress += len;
+          now = EnvironmentEdgeManager.currentTime();
         }
-        // check periodically to see if a system stop is requested
-        if (closeCheckInterval > 0) {
-          bytesWritten += len;
-          if (bytesWritten > closeCheckInterval) {
-            bytesWritten = 0;
-            if (!store.areWritesEnabled()) {
-              progress.cancel();
-              return false;
+        // output to writer:
+        for (Cell c : cells) {
+          if (cleanSeqId && c.getSequenceId() <= smallestReadPoint) {
+            CellUtil.setSequenceId(c, 0);
+          }
+          writer.append(c);
+          int len = KeyValueUtil.length(c);
+          ++progress.currentCompactedKVs;
+          progress.totalCompactedSize += len;
+          if (LOG.isDebugEnabled()) {
+            bytesWrittenProgress += len;
+          }
+          throughputController.control(compactionName, len);
+          // check periodically to see if a system stop is requested
+          if (closeCheckInterval > 0) {
+            bytesWritten += len;
+            if (bytesWritten > closeCheckInterval) {
+              bytesWritten = 0;
+              if (!store.areWritesEnabled()) {
+                progress.cancel();
+                return false;
+              }
             }
           }
         }
-      }
-      // Log the progress of long running compactions every minute if
-      // logging at DEBUG level
-      if (LOG.isDebugEnabled()) {
-        if ((now - lastMillis) >= 60 * 1000) {
-          LOG.debug("Compaction progress: " + progress + String.format(", rate=%.2f kB/sec",
-            (bytesWrittenProgress / 1024.0) / ((now - lastMillis) / 1000.0)));
-          lastMillis = now;
-          bytesWrittenProgress = 0;
+        // Log the progress of long running compactions every minute if
+        // logging at DEBUG level
+        if (LOG.isDebugEnabled()) {
+          if ((now - lastMillis) >= 60 * 1000) {
+            LOG.debug("Compaction progress: "
+                + compactionName
+                + " "
+                + progress
+                + String.format(", rate=%.2f kB/sec", (bytesWrittenProgress / 1024.0)
+                    / ((now - lastMillis) / 1000.0)) + ", throughputController is "
+                + throughputController);
+            lastMillis = now;
+            bytesWrittenProgress = 0;
+          }
         }
-      }
-      cells.clear();
-    } while (hasMore);
+        cells.clear();
+      } while (hasMore);
+    } catch (InterruptedException e) {
+      progress.cancel();
+      throw new InterruptedIOException("Interrupted while control throughput of compacting "
+          + compactionName);
+    } finally {
+      throughputController.finish(compactionName);
+    }
     progress.complete();
     return true;
   }

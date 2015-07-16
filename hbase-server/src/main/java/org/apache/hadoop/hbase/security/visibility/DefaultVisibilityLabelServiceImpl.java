@@ -42,8 +42,10 @@ import java.util.regex.Pattern;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.AuthUtil;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HConstants.OperationStatusCode;
 import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.TagType;
@@ -55,11 +57,11 @@ import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.io.util.StreamUtils;
-import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.OperationStatus;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionScanner;
+import org.apache.hadoop.hbase.security.Superusers;
 import org.apache.hadoop.hbase.security.User;
-import org.apache.hadoop.hbase.security.access.AccessControlLists;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
@@ -76,11 +78,9 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
 
   private AtomicInteger ordinalCounter = new AtomicInteger(-1);
   private Configuration conf;
-  private HRegion labelsRegion;
+  private Region labelsRegion;
   private VisibilityLabelsCache labelsCache;
   private List<ScanLabelGenerator> scanLabelGenerators;
-  private List<String> superUsers;
-  private List<String> superGroups;
 
   static {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -117,10 +117,6 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
       throw ioe;
     }
     this.scanLabelGenerators = VisibilityUtils.getScanLabelGenerators(this.conf);
-    Pair<List<String>, List<String>> superUsersAndGroups =
-        VisibilityUtils.getSystemAndSuperUsers(this.conf);
-    this.superUsers = superUsersAndGroups.getFirst();
-    this.superGroups = superUsersAndGroups.getSecond();
     if (e.getRegion().getRegionInfo().getTable().equals(LABELS_TABLE_NAME)) {
       this.labelsRegion = e.getRegion();
       Pair<Map<String, Integer>, Map<String, List<Integer>>> labelsAndUserAuths =
@@ -175,11 +171,10 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
     Map<String, List<Integer>> userAuths = new HashMap<String, List<Integer>>();
     for (List<Cell> cells : labelDetails) {
       for (Cell cell : cells) {
-        if (Bytes.equals(cell.getQualifierArray(), cell.getQualifierOffset(),
-            cell.getQualifierLength(), LABEL_QUALIFIER, 0, LABEL_QUALIFIER.length)) {
+        if (CellUtil.matchingQualifier(cell, LABEL_QUALIFIER)) {
           labels.put(
               Bytes.toString(cell.getValueArray(), cell.getValueOffset(), cell.getValueLength()),
-              Bytes.toInt(cell.getRowArray(), cell.getRowOffset()));
+              CellUtil.getRowAsInt(cell));
         } else {
           // These are user cells who has authorization for this label
           String user = Bytes.toString(cell.getQualifierArray(), cell.getQualifierOffset(),
@@ -189,14 +184,14 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
             auths = new ArrayList<Integer>();
             userAuths.put(user, auths);
           }
-          auths.add(Bytes.toInt(cell.getRowArray(), cell.getRowOffset()));
+          auths.add(CellUtil.getRowAsInt(cell));
         }
       }
     }
     return new Pair<Map<String, Integer>, Map<String, List<Integer>>>(labels, userAuths);
   }
 
-  protected void addSystemLabel(HRegion region, Map<String, Integer> labels,
+  protected void addSystemLabel(Region region, Map<String, Integer> labels,
       Map<String, List<Integer>> userAuths) throws IOException {
     if (!labels.containsKey(SYSTEM_LABEL)) {
       Put p = new Put(Bytes.toBytes(SYSTEM_LABEL_ORDINAL));
@@ -265,8 +260,8 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
     assert labelsRegion != null;
     OperationStatus[] finalOpStatus = new OperationStatus[authLabels.size()];
     List<String> currentAuths;
-    if (AccessControlLists.isGroupPrincipal(Bytes.toString(user))) {
-      String group = AccessControlLists.getGroupName(Bytes.toString(user));
+    if (AuthUtil.isGroupPrincipal(Bytes.toString(user))) {
+      String group = AuthUtil.getGroupName(Bytes.toString(user));
       currentAuths = this.getGroupAuths(new String[]{group}, true);
     }
     else {
@@ -280,7 +275,7 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
         int labelOrdinal = this.labelsCache.getLabelOrdinal(authLabelStr);
         assert labelOrdinal > 0;
         Delete d = new Delete(Bytes.toBytes(labelOrdinal));
-        d.deleteColumns(LABELS_TABLE_FAMILY, user);
+        d.addColumns(LABELS_TABLE_FAMILY, user);
         deletes.add(d);
       } else {
         // This label is not set for the user.
@@ -307,7 +302,7 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
   private boolean mutateLabelsRegion(List<Mutation> mutations, OperationStatus[] finalOpStatus)
       throws IOException {
     OperationStatus[] opStatus = this.labelsRegion.batchMutate(mutations
-        .toArray(new Mutation[mutations.size()]));
+      .toArray(new Mutation[mutations.size()]), HConstants.NO_NONCE, HConstants.NO_NONCE);
     int i = 0;
     boolean updateZk = false;
     for (OperationStatus status : opStatus) {
@@ -345,7 +340,7 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
         scanner.next(results);
         if (results.isEmpty()) break;
         Cell cell = results.get(0);
-        int ordinal = Bytes.toInt(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+        int ordinal = CellUtil.getRowAsInt(cell);
         String label = this.labelsCache.getLabel(ordinal);
         if (label != null) {
           auths.add(label);
@@ -368,7 +363,7 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
     Scan s = new Scan();
     if (groups != null && groups.length > 0) {
       for (String group : groups) {
-        s.addColumn(LABELS_TABLE_FAMILY, Bytes.toBytes(AccessControlLists.toGroupEntry(group)));
+        s.addColumn(LABELS_TABLE_FAMILY, Bytes.toBytes(AuthUtil.toGroupEntry(group)));
       }
     }
     Filter filter = VisibilityUtils.createVisibilityLabelFilter(this.labelsRegion,
@@ -382,7 +377,7 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
         scanner.next(results);
         if (results.isEmpty()) break;
         Cell cell = results.get(0);
-        int ordinal = Bytes.toInt(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+        int ordinal = CellUtil.getRowAsInt(cell);
         String label = this.labelsCache.getLabel(ordinal);
         if (label != null) {
           auths.add(label);
@@ -538,7 +533,7 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
   @Override
   public boolean havingSystemAuth(User user) throws IOException {
     // A super user has 'system' auth.
-    if (isSystemOrSuperUser(user)) {
+    if (Superusers.isSuperUser(user)) {
       return true;
     }
     // A user can also be explicitly granted 'system' auth.
@@ -554,21 +549,6 @@ public class DefaultVisibilityLabelServiceImpl implements VisibilityLabelService
       LOG.trace("The auths for groups of user " + user.getShortName() + " are " + auths);
     }
     return auths.contains(SYSTEM_LABEL);
-  }
-
-  private boolean isSystemOrSuperUser(User user) throws IOException {
-    if (this.superUsers.contains(user.getShortName())) {
-      return true;
-    }
-    String[] groups = user.getGroupNames();
-    if (groups != null && groups.length > 0) {
-      for (String group : groups) {
-        if (this.superGroups.contains(group)) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 
   @Override

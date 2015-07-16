@@ -61,15 +61,15 @@ public class MetricsMasterSourceImpl
     clusterRequestsCounter = metricsRegistry.newCounter(CLUSTER_REQUESTS_NAME, "", 0l);
   }
 
-  public void incRequests(final int inc) {
+  @Override
+  public void incRequests(final long inc) {
     this.clusterRequestsCounter.incr(inc);
   }
 
   @Override
   public void getMetrics(MetricsCollector metricsCollector, boolean all) {
 
-    MetricsRecordBuilder metricsRecordBuilder = metricsCollector.addRecord(metricsName)
-        .setContext(metricsContext);
+    MetricsRecordBuilder metricsRecordBuilder = metricsCollector.addRecord(metricsName);
 
     // masterWrapper can be null because this function is called inside of init.
     if (masterWrapper != null) {

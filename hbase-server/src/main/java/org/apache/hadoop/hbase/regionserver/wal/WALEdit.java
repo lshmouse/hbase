@@ -36,6 +36,7 @@ import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.codec.Codec;
 import org.apache.hadoop.hbase.io.HeapSize;
+import org.apache.hadoop.hbase.protobuf.generated.WALProtos;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.CompactionDescriptor;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.FlushDescriptor;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.RegionEventDescriptor;
@@ -43,6 +44,8 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ClassSize;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.io.Writable;
+
+import com.google.common.annotations.VisibleForTesting;
 
 
 /**
@@ -54,9 +57,9 @@ import org.apache.hadoop.io.Writable;
  * Previously, if a transaction contains 3 edits to c1, c2, c3 for a row R,
  * the WAL would have three log entries as follows:
  *
- *    <logseq1-for-edit1>:<KeyValue-for-edit-c1>
- *    <logseq2-for-edit2>:<KeyValue-for-edit-c2>
- *    <logseq3-for-edit3>:<KeyValue-for-edit-c3>
+ *    &lt;logseq1-for-edit1&gt;:&lt;eyValue-for-edit-c1&gt;
+ *    &lt;logseq2-for-edit2&gt;:&lt;KeyValue-for-edit-c2&gt;
+ *    &lt;logseq3-for-edit3&gt;:&lt;KeyValue-for-edit-c3&gt;
  *
  * This presents problems because row level atomicity of transactions
  * was not guaranteed. If we crash after few of the above appends make
@@ -65,15 +68,15 @@ import org.apache.hadoop.io.Writable;
  * In the new world, all the edits for a given transaction are written
  * out as a single record, for example:
  *
- *   <logseq#-for-entire-txn>:<WALEdit-for-entire-txn>
+ *   &lt;logseq#-for-entire-txn&gt;:&lt;WALEdit-for-entire-txn&gt;
  *
  * where, the WALEdit is serialized as:
- *   <-1, # of edits, <KeyValue>, <KeyValue>, ... >
+ *   &lt;-1, # of edits, &lt;KeyValue&gt;, &lt;KeyValue&gt;, ... &gt;
  * For example:
- *   <-1, 3, <Keyvalue-for-edit-c1>, <KeyValue-for-edit-c2>, <KeyValue-for-edit-c3>>
+ *   &lt;-1, 3, &lt;Keyvalue-for-edit-c1&gt;, &lt;KeyValue-for-edit-c2&gt;, &lt;KeyValue-for-edit-c3&gt;&gt;
  *
  * The -1 marker is just a special way of being backward compatible with
- * an old WAL which would have contained a single <KeyValue>.
+ * an old WAL which would have contained a single &lt;KeyValue&gt;.
  *
  * The deserializer for WALEdit backward compatibly detects if the record
  * is an old style KeyValue or the new style WALEdit.
@@ -82,7 +85,7 @@ import org.apache.hadoop.io.Writable;
 @InterfaceAudience.LimitedPrivate({ HBaseInterfaceAudience.REPLICATION,
     HBaseInterfaceAudience.COPROC })
 public class WALEdit implements Writable, HeapSize {
-  public static final Log LOG = LogFactory.getLog(WALEdit.class);
+  private static final Log LOG = LogFactory.getLog(WALEdit.class);
 
   // TODO: Get rid of this; see HBASE-8457
   public static final byte [] METAFAMILY = Bytes.toBytes("METAFAMILY");
@@ -90,6 +93,8 @@ public class WALEdit implements Writable, HeapSize {
   static final byte[] COMPACTION = Bytes.toBytes("HBASE::COMPACTION");
   static final byte [] FLUSH = Bytes.toBytes("HBASE::FLUSH");
   static final byte [] REGION_EVENT = Bytes.toBytes("HBASE::REGION_EVENT");
+  @VisibleForTesting
+  public static final byte [] BULK_LOAD = Bytes.toBytes("HBASE::BULK_LOAD");
 
   private final int VERSION_2 = -1;
   private final boolean isReplay;
@@ -122,6 +127,15 @@ public class WALEdit implements Writable, HeapSize {
 
   public static boolean isMetaEditFamily(Cell cell) {
     return CellUtil.matchingFamily(cell, METAFAMILY);
+  }
+
+  public boolean isMetaEdit() {
+    for (Cell cell: cells) {
+      if (!isMetaEditFamily(cell)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -174,7 +188,7 @@ public class WALEdit implements Writable, HeapSize {
         if (compressionContext != null) {
           this.add(KeyValueCompression.readKV(in, compressionContext));
         } else {
-          this.add(KeyValue.create(in));
+          this.add(KeyValueUtil.create(in));
         }
       }
       int numFamilies = in.readInt();
@@ -191,7 +205,7 @@ public class WALEdit implements Writable, HeapSize {
     } else {
       // this is an old style WAL entry. The int that we just
       // read is actually the length of a single KeyValue
-      this.add(KeyValue.create(versionOrLength, in));
+      this.add(KeyValueUtil.create(versionOrLength, in));
     }
   }
 
@@ -207,7 +221,7 @@ public class WALEdit implements Writable, HeapSize {
       if (compressionContext != null) {
         KeyValueCompression.writeKV(out, kv, compressionContext);
       } else{
-        KeyValue.write(kv, out);
+        KeyValueUtil.write(kv, out);
       }
     }
     if (scopes == null) {
@@ -274,7 +288,7 @@ public class WALEdit implements Writable, HeapSize {
 
   public static FlushDescriptor getFlushDescriptor(Cell cell) throws IOException {
     if (CellUtil.matchingColumn(cell, METAFAMILY, FLUSH)) {
-      return FlushDescriptor.parseFrom(cell.getValue());
+      return FlushDescriptor.parseFrom(CellUtil.cloneValue(cell));
     }
     return null;
   }
@@ -288,13 +302,13 @@ public class WALEdit implements Writable, HeapSize {
 
   public static RegionEventDescriptor getRegionEventDescriptor(Cell cell) throws IOException {
     if (CellUtil.matchingColumn(cell, METAFAMILY, REGION_EVENT)) {
-      return RegionEventDescriptor.parseFrom(cell.getValue());
+      return RegionEventDescriptor.parseFrom(CellUtil.cloneValue(cell));
     }
     return null;
   }
 
   /**
-   * Create a compacion WALEdit
+   * Create a compaction WALEdit
    * @param c
    * @return A WALEdit that has <code>c</code> serialized as its value
    */
@@ -322,7 +336,36 @@ public class WALEdit implements Writable, HeapSize {
    */
   public static CompactionDescriptor getCompaction(Cell kv) throws IOException {
     if (CellUtil.matchingColumn(kv, METAFAMILY, COMPACTION)) {
-      return CompactionDescriptor.parseFrom(kv.getValue());
+      return CompactionDescriptor.parseFrom(CellUtil.cloneValue(kv));
+    }
+    return null;
+  }
+
+  /**
+   * Create a bulk loader WALEdit
+   *
+   * @param hri                The HRegionInfo for the region in which we are bulk loading
+   * @param bulkLoadDescriptor The descriptor for the Bulk Loader
+   * @return The WALEdit for the BulkLoad
+   */
+  public static WALEdit createBulkLoadEvent(HRegionInfo hri,
+                                            WALProtos.BulkLoadDescriptor bulkLoadDescriptor) {
+    KeyValue kv = new KeyValue(getRowForRegion(hri),
+        METAFAMILY,
+        BULK_LOAD,
+        EnvironmentEdgeManager.currentTime(),
+        bulkLoadDescriptor.toByteArray());
+    return new WALEdit().add(kv);
+  }
+
+  /**
+   * Deserialized and returns a BulkLoadDescriptor from the passed in Cell
+   * @param cell the key value
+   * @return deserialized BulkLoadDescriptor or null.
+   */
+  public static WALProtos.BulkLoadDescriptor getBulkLoadDescriptor(Cell cell) throws IOException {
+    if (CellUtil.matchingColumn(cell, METAFAMILY, BULK_LOAD)) {
+      return WALProtos.BulkLoadDescriptor.parseFrom(CellUtil.cloneValue(cell));
     }
     return null;
   }

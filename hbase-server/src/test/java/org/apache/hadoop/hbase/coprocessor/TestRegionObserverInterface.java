@@ -53,6 +53,7 @@ import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.RowMutations;
@@ -66,8 +67,10 @@ import org.apache.hadoop.hbase.mapreduce.LoadIncrementalHFiles;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
+import org.apache.hadoop.hbase.regionserver.NoLimitScannerContext;
 import org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost;
 import org.apache.hadoop.hbase.regionserver.ScanType;
+import org.apache.hadoop.hbase.regionserver.ScannerContext;
 import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.testclassification.CoprocessorTests;
@@ -78,12 +81,13 @@ import org.apache.hadoop.hbase.util.JVMClusterUtil;
 import org.apache.hadoop.hbase.util.Threads;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 @Category({CoprocessorTests.class, MediumTests.class})
 public class TestRegionObserverInterface {
-  static final Log LOG = LogFactory.getLog(TestRegionObserverInterface.class);
+  private static final Log LOG = LogFactory.getLog(TestRegionObserverInterface.class);
 
   public static final TableName TEST_TABLE = TableName.valueOf("TestTable");
   public final static byte[] A = Bytes.toBytes("a");
@@ -112,7 +116,7 @@ public class TestRegionObserverInterface {
     util.shutdownMiniCluster();
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testRegionObserver() throws IOException {
     TableName tableName = TableName.valueOf(TEST_TABLE.getNameAsString() + ".testRegionObserver");
     // recreate table every time in order to reset the status of the
@@ -137,9 +141,8 @@ public class TestRegionObserverInterface {
           true, true, true, false, true, true, true });
 
       verifyMethodResult(SimpleRegionObserver.class,
-          new String[] {"getCtPreOpen", "getCtPostOpen", "getCtPreClose", "getCtPostClose"},
-          tableName,
-          new Integer[] {1, 1, 0, 0});
+          new String[] { "getCtPreOpen", "getCtPostOpen", "getCtPreClose", "getCtPostClose" },
+          tableName, new Integer[] { 1, 1, 0, 0 });
 
       Get get = new Get(ROW);
       get.addColumn(A, A);
@@ -148,11 +151,9 @@ public class TestRegionObserverInterface {
       table.get(get);
 
       verifyMethodResult(SimpleRegionObserver.class,
-          new String[] {"hadPreGet", "hadPostGet", "hadPrePut", "hadPostPut",
-      "hadDelete", "hadPrePreparedDeleteTS"},
-      tableName,
-      new Boolean[] {true, true, true, true, false, false}
-          );
+          new String[] { "hadPreGet", "hadPostGet", "hadPrePut", "hadPostPut", "hadDelete",
+              "hadPrePreparedDeleteTS" }, tableName,
+          new Boolean[] { true, true, true, true, false, false });
 
       Delete delete = new Delete(ROW);
       delete.deleteColumn(A, A);
@@ -176,10 +177,10 @@ public class TestRegionObserverInterface {
         new Integer[] {1, 1, 1, 1});
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testRowMutation() throws IOException {
     TableName tableName = TableName.valueOf(TEST_TABLE.getNameAsString() + ".testRowMutation");
-    Table table = util.createTable(tableName, new byte[][] {A, B, C});
+    Table table = util.createTable(tableName, new byte[][] { A, B, C });
     try {
       verifyMethodResult(SimpleRegionObserver.class,
         new String[] {"hadPreGet", "hadPostGet", "hadPrePut", "hadPostPut",
@@ -213,10 +214,10 @@ public class TestRegionObserverInterface {
     }
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testIncrementHook() throws IOException {
     TableName tableName = TableName.valueOf(TEST_TABLE.getNameAsString() + ".testIncrementHook");
-    Table table = util.createTable(tableName, new byte[][] {A, B, C});
+    Table table = util.createTable(tableName, new byte[][] { A, B, C });
     try {
       Increment inc = new Increment(Bytes.toBytes(0));
       inc.addColumn(A, A, 1);
@@ -240,7 +241,7 @@ public class TestRegionObserverInterface {
     }
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testCheckAndPutHooks() throws IOException {
     TableName tableName =
         TableName.valueOf(TEST_TABLE.getNameAsString() + ".testCheckAndPutHooks");
@@ -251,11 +252,8 @@ public class TestRegionObserverInterface {
       p = new Put(Bytes.toBytes(0));
       p.add(A, A, A);
       verifyMethodResult(SimpleRegionObserver.class,
-          new String[] {"hadPreCheckAndPut",
-              "hadPreCheckAndPutAfterRowLock", "hadPostCheckAndPut"},
-          tableName,
-          new Boolean[] {false, false, false}
-          );
+          new String[] { "hadPreCheckAndPut", "hadPreCheckAndPutAfterRowLock",
+              "hadPostCheckAndPut" }, tableName, new Boolean[] { false, false, false });
       table.checkAndPut(Bytes.toBytes(0), A, A, A, p);
       verifyMethodResult(SimpleRegionObserver.class,
           new String[] {"hadPreCheckAndPut",
@@ -268,7 +266,7 @@ public class TestRegionObserverInterface {
     }
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testCheckAndDeleteHooks() throws IOException {
     TableName tableName =
         TableName.valueOf(TEST_TABLE.getNameAsString() + ".testCheckAndDeleteHooks");
@@ -298,10 +296,10 @@ public class TestRegionObserverInterface {
     }
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testAppendHook() throws IOException {
     TableName tableName = TableName.valueOf(TEST_TABLE.getNameAsString() + ".testAppendHook");
-    Table table = util.createTable(tableName, new byte[][] {A, B, C});
+    Table table = util.createTable(tableName, new byte[][] { A, B, C });
     try {
       Append app = new Append(Bytes.toBytes(0));
       app.add(A, A, A);
@@ -325,7 +323,7 @@ public class TestRegionObserverInterface {
     }
   }
 
-  @Test
+  @Test (timeout=300000)
   // HBase-3583
   public void testHBase3583() throws IOException {
     TableName tableName =
@@ -334,11 +332,8 @@ public class TestRegionObserverInterface {
     util.waitUntilAllRegionsAssigned(tableName);
 
     verifyMethodResult(SimpleRegionObserver.class,
-        new String[] {"hadPreGet", "hadPostGet", "wasScannerNextCalled",
-            "wasScannerCloseCalled"},
-        tableName,
-        new Boolean[] {false, false, false, false}
-    );
+        new String[] { "hadPreGet", "hadPostGet", "wasScannerNextCalled", "wasScannerCloseCalled" },
+        tableName, new Boolean[] { false, false, false, false });
 
     Table table = util.getConnection().getTable(tableName);
     Put put = new Put(ROW);
@@ -377,7 +372,7 @@ public class TestRegionObserverInterface {
     table.close();
   }
 
-  @Test
+  @Test (timeout=300000)
   // HBase-3758
   public void testHBase3758() throws IOException {
     TableName tableName =
@@ -434,16 +429,16 @@ public class TestRegionObserverInterface {
       return new InternalScanner() {
         @Override
         public boolean next(List<Cell> results) throws IOException {
-          return next(results, -1);
+          return next(results, NoLimitScannerContext.getInstance());
         }
 
         @Override
-        public boolean next(List<Cell> results, int limit)
-            throws IOException{
+        public boolean next(List<Cell> results, ScannerContext scannerContext)
+            throws IOException {
           List<Cell> internalResults = new ArrayList<Cell>();
           boolean hasMore;
           do {
-            hasMore = scanner.next(internalResults, limit);
+            hasMore = scanner.next(internalResults, scannerContext);
             if (!internalResults.isEmpty()) {
               long row = Bytes.toLong(CellUtil.cloneValue(internalResults.get(0)));
               if (row % 2 == 0) {
@@ -483,7 +478,7 @@ public class TestRegionObserverInterface {
    * Tests overriding compaction handling via coprocessor hooks
    * @throws Exception
    */
-  @Test
+  @Test (timeout=300000)
   public void testCompactionOverride() throws Exception {
     TableName compactTable = TableName.valueOf("TestCompactionOverride");
     Admin admin = util.getHBaseAdmin();
@@ -554,13 +549,13 @@ public class TestRegionObserverInterface {
     table.close();
   }
 
-  @Test
+  @Test (timeout=300000)
   public void bulkLoadHFileTest() throws Exception {
     String testName = TestRegionObserverInterface.class.getName()+".bulkLoadHFileTest";
     TableName tableName = TableName.valueOf(TEST_TABLE.getNameAsString() + ".bulkLoadHFileTest");
     Configuration conf = util.getConfiguration();
-    HTable table = util.createTable(tableName, new byte[][] {A, B, C});
-    try {
+    Table table = util.createTable(tableName, new byte[][] {A, B, C});
+    try (RegionLocator locator = util.getConnection().getRegionLocator(tableName)) {
       verifyMethodResult(SimpleRegionObserver.class,
           new String[] {"hadPreBulkLoadHFile", "hadPostBulkLoadHFile"},
           tableName,
@@ -571,10 +566,10 @@ public class TestRegionObserverInterface {
       final Path dir = util.getDataTestDirOnTestFS(testName).makeQualified(fs);
       Path familyDir = new Path(dir, Bytes.toString(A));
 
-      createHFile(util.getConfiguration(), fs, new Path(familyDir,Bytes.toString(A)), A, A);
+      createHFile(util.getConfiguration(), fs, new Path(familyDir, Bytes.toString(A)), A, A);
 
       // Bulk load
-      new LoadIncrementalHFiles(conf).doBulkLoad(dir, table);
+      new LoadIncrementalHFiles(conf).doBulkLoad(dir, util.getHBaseAdmin(), table, locator);
 
       verifyMethodResult(SimpleRegionObserver.class,
           new String[] {"hadPreBulkLoadHFile", "hadPostBulkLoadHFile"},
@@ -587,25 +582,27 @@ public class TestRegionObserverInterface {
     }
   }
 
-  @Test
+  @Ignore // TODO: HBASE-13391 to fix flaky test
+  @Test (timeout=300000)
   public void testRecovery() throws Exception {
     LOG.info(TestRegionObserverInterface.class.getName() +".testRecovery");
     TableName tableName = TableName.valueOf(TEST_TABLE.getNameAsString() + ".testRecovery");
-    HTable table = util.createTable(tableName, new byte[][] {A, B, C});
-    try {
+    Table table = util.createTable(tableName, new byte[][] {A, B, C});
+    try (RegionLocator locator = util.getConnection().getRegionLocator(tableName)) {
+
       JVMClusterUtil.RegionServerThread rs1 = cluster.startRegionServer();
       ServerName sn2 = rs1.getRegionServer().getServerName();
-      String regEN = table.getRegionLocations().firstEntry().getKey().getEncodedName();
+      String regEN = locator.getAllRegionLocations().get(0).getRegionInfo().getEncodedName();
 
       util.getHBaseAdmin().move(regEN.getBytes(), sn2.getServerName().getBytes());
-      while (!sn2.equals(table.getRegionLocations().firstEntry().getValue() )){
+      while (!sn2.equals(locator.getAllRegionLocations().get(0).getServerName())){
         Thread.sleep(100);
       }
 
       Put put = new Put(ROW);
-      put.add(A, A, A);
-      put.add(B, B, B);
-      put.add(C, C, C);
+      put.addColumn(A, A, A);
+      put.addColumn(B, B, B);
+      put.addColumn(C, C, C);
       table.put(put);
 
       verifyMethodResult(SimpleRegionObserver.class,
@@ -637,18 +634,72 @@ public class TestRegionObserverInterface {
     }
   }
 
-  @Test
+  @Ignore // TODO: HBASE-13391 to fix flaky test
+  @Test (timeout=300000)
   public void testLegacyRecovery() throws Exception {
     LOG.info(TestRegionObserverInterface.class.getName() +".testLegacyRecovery");
     TableName tableName = TableName.valueOf(TEST_TABLE.getNameAsString() + ".testLegacyRecovery");
-    HTable table = util.createTable(tableName, new byte[][] {A, B, C});
+    Table table = util.createTable(tableName, new byte[][] {A, B, C});
     try {
+      try (RegionLocator locator = util.getConnection().getRegionLocator(tableName)) {
+        JVMClusterUtil.RegionServerThread rs1 = cluster.startRegionServer();
+        ServerName sn2 = rs1.getRegionServer().getServerName();
+        String regEN = locator.getAllRegionLocations().get(0).getRegionInfo().getEncodedName();
+
+        util.getHBaseAdmin().move(regEN.getBytes(), sn2.getServerName().getBytes());
+        while (!sn2.equals(locator.getAllRegionLocations().get(0).getServerName())) {
+          Thread.sleep(100);
+        }
+
+        Put put = new Put(ROW);
+        put.add(A, A, A);
+        put.add(B, B, B);
+        put.add(C, C, C);
+        table.put(put);
+
+        verifyMethodResult(SimpleRegionObserver.Legacy.class,
+            new String[] {"hadPreGet", "hadPostGet", "hadPrePut", "hadPostPut",
+                "hadPreBatchMutate", "hadPostBatchMutate", "hadDelete"},
+            tableName,
+            new Boolean[] {false, false, true, true, true, true, false}
+        );
+
+        verifyMethodResult(SimpleRegionObserver.Legacy.class,
+            new String[] {"getCtPreWALRestore", "getCtPostWALRestore", "getCtPrePut",
+                "getCtPostPut", "getCtPreWALRestoreDeprecated", "getCtPostWALRestoreDeprecated"},
+            tableName,
+            new Integer[] {0, 0, 1, 1, 0, 0});
+
+        cluster.killRegionServer(rs1.getRegionServer().getServerName());
+        Threads.sleep(1000); // Let the kill soak in.
+        util.waitUntilAllRegionsAssigned(tableName);
+        LOG.info("All regions assigned");
+
+        verifyMethodResult(SimpleRegionObserver.Legacy.class,
+            new String[] {"getCtPreWALRestore", "getCtPostWALRestore", "getCtPrePut",
+                "getCtPostPut", "getCtPreWALRestoreDeprecated", "getCtPostWALRestoreDeprecated"},
+            tableName,
+            new Integer[]{1, 1, 0, 0, 1, 1});
+      }
+    } finally {
+      util.deleteTable(tableName);
+      table.close();
+    }
+  }
+
+  @Test (timeout=300000)
+  public void testPreWALRestoreSkip() throws Exception {
+    LOG.info(TestRegionObserverInterface.class.getName() + ".testPreWALRestoreSkip");
+    TableName tableName = TableName.valueOf(SimpleRegionObserver.TABLE_SKIPPED);
+    Table table = util.createTable(tableName, new byte[][] { A, B, C });
+
+    try (RegionLocator locator = util.getConnection().getRegionLocator(tableName)) {
       JVMClusterUtil.RegionServerThread rs1 = cluster.startRegionServer();
       ServerName sn2 = rs1.getRegionServer().getServerName();
-      String regEN = table.getRegionLocations().firstEntry().getKey().getEncodedName();
+      String regEN = locator.getAllRegionLocations().get(0).getRegionInfo().getEncodedName();
 
       util.getHBaseAdmin().move(regEN.getBytes(), sn2.getServerName().getBytes());
-      while (!sn2.equals(table.getRegionLocations().firstEntry().getValue() )){
+      while (!sn2.equals(locator.getAllRegionLocations().get(0).getServerName())) {
         Thread.sleep(100);
       }
 
@@ -658,60 +709,10 @@ public class TestRegionObserverInterface {
       put.add(C, C, C);
       table.put(put);
 
-      verifyMethodResult(SimpleRegionObserver.Legacy.class,
-          new String[] {"hadPreGet", "hadPostGet", "hadPrePut", "hadPostPut",
-        "hadPreBatchMutate", "hadPostBatchMutate", "hadDelete"},
-        tableName,
-        new Boolean[] {false, false, true, true, true, true, false}
-          );
-
-      verifyMethodResult(SimpleRegionObserver.Legacy.class,
-          new String[] {"getCtPreWALRestore", "getCtPostWALRestore", "getCtPrePut", "getCtPostPut",
-              "getCtPreWALRestoreDeprecated", "getCtPostWALRestoreDeprecated"},
-          tableName,
-          new Integer[] {0, 0, 1, 1, 0, 0});
-
       cluster.killRegionServer(rs1.getRegionServer().getServerName());
-      Threads.sleep(1000); // Let the kill soak in.
+      Threads.sleep(20000); // just to be sure that the kill has fully started.
       util.waitUntilAllRegionsAssigned(tableName);
-      LOG.info("All regions assigned");
-
-      verifyMethodResult(SimpleRegionObserver.Legacy.class,
-          new String[] {"getCtPreWALRestore", "getCtPostWALRestore", "getCtPrePut", "getCtPostPut",
-              "getCtPreWALRestoreDeprecated", "getCtPostWALRestoreDeprecated"},
-          tableName,
-          new Integer[]{1, 1, 0, 0, 1, 1});
-    } finally {
-      util.deleteTable(tableName);
-      table.close();
     }
-  }
-
-  @Test
-  public void testPreWALRestoreSkip() throws Exception {
-    LOG.info(TestRegionObserverInterface.class.getName() + ".testPreWALRestoreSkip");
-    TableName tableName = TableName.valueOf(SimpleRegionObserver.TABLE_SKIPPED);
-    HTable table = util.createTable(tableName, new byte[][] { A, B, C });
-
-    JVMClusterUtil.RegionServerThread rs1 = cluster.startRegionServer();
-    ServerName sn2 = rs1.getRegionServer().getServerName();
-    String regEN = table.getRegionLocations().firstEntry().getKey().getEncodedName();
-
-    util.getHBaseAdmin().move(regEN.getBytes(), sn2.getServerName().getBytes());
-    while (!sn2.equals(table.getRegionLocations().firstEntry().getValue())) {
-      Thread.sleep(100);
-    }
-
-    Put put = new Put(ROW);
-    put.add(A, A, A);
-    put.add(B, B, B);
-    put.add(C, C, C);
-    table.put(put);
-    table.flushCommits();
-
-    cluster.killRegionServer(rs1.getRegionServer().getServerName());
-    Threads.sleep(20000); // just to be sure that the kill has fully started.
-    util.waitUntilAllRegionsAssigned(tableName);
 
     verifyMethodResult(SimpleRegionObserver.class, new String[] { "getCtPreWALRestore",
         "getCtPostWALRestore", "getCtPreWALRestoreDeprecated", "getCtPostWALRestoreDeprecated"},
@@ -772,5 +773,4 @@ public class TestRegionObserverInterface {
       writer.close();
     }
   }
-
 }

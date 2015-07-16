@@ -21,6 +21,8 @@ package org.apache.hadoop.hbase.client;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.UnknownHostException;
+import java.util.Map;
+import java.util.Map.Entry;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -55,7 +57,7 @@ import com.google.protobuf.TextFormat;
 
 /**
  * Scanner operations such as create, next, etc.
- * Used by {@link ResultScanner}s made by {@link HTable}. Passed to a retrying caller such as
+ * Used by {@link ResultScanner}s made by {@link Table}. Passed to a retrying caller such as
  * {@link RpcRetryingCaller} so fails are retried.
  */
 @InterfaceAudience.Private
@@ -64,6 +66,7 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
     = "hbase.client.log.scanner.latency.cutoff";
   public static final String LOG_SCANNER_ACTIVITY = "hbase.client.log.scanner.activity";
 
+  // Keeping LOG public as it is being used in TestScannerHeartbeatMessages
   public static final Log LOG = LogFactory.getLog(ScannerCallable.class);
   protected long scannerId = -1L;
   protected boolean instantiated = false;
@@ -76,6 +79,14 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
   private int logCutOffLatency = 1000;
   private static String myAddress;
   protected final int id;
+  protected boolean serverHasMoreResultsContext;
+  protected boolean serverHasMoreResults;
+
+  /**
+   * Saves whether or not the most recent response from the server was a heartbeat message.
+   * Heartbeat messages are identified by the flag {@link ScanResponse#getHeartbeatMessage()}
+   */
+  protected boolean heartbeatMessage = false;
   static {
     try {
       myAddress = DNS.getDefaultHost("default", "default");
@@ -153,8 +164,6 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
     }
 
     // check how often we retry.
-    // HConnectionManager will call instantiateServer with reload==true
-    // if and only if for retries.
     if (reload && this.scanMetrics != null) {
       this.scanMetrics.countOfRPCRetries.incrementAndGet();
       if (isRegionServerRemote) {
@@ -177,7 +186,6 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
 
 
   @Override
-  @SuppressWarnings("deprecation")
   public Result [] call(int callTimeout) throws IOException {
     if (Thread.interrupted()) {
       throw new InterruptedIOException();
@@ -192,9 +200,13 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
       } else {
         Result [] rrs = null;
         ScanRequest request = null;
+        // Reset the heartbeat flag prior to each RPC in case an exception is thrown by the server
+        setHeartbeatMessage(false);
         try {
           incRPCcallsMetrics();
-          request = RequestConverter.buildScanRequest(scannerId, caching, false, nextCallSeq);
+          request =
+              RequestConverter.buildScanRequest(scannerId, caching, false, nextCallSeq,
+                this.scanMetrics != null);
           ScanResponse response = null;
           controller = controllerFactory.newController();
           controller.setPriority(getTableName());
@@ -212,6 +224,7 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
             // See HBASE-5974
             nextCallSeq++;
             long timestamp = System.currentTimeMillis();
+            setHeartbeatMessage(response.hasHeartbeatMessage() && response.getHeartbeatMessage());
             // Results are returned via controller
             CellScanner cellScanner = controller.cellScanner();
             rrs = ResponseConverter.getResults(cellScanner, response);
@@ -223,11 +236,23 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
                   + rows + " rows from scanner=" + scannerId);
               }
             }
-            if (response.hasMoreResults()
-                && !response.getMoreResults()) {
+            updateServerSideMetrics(response);
+            // moreResults is only used for the case where a filter exhausts all elements
+            if (response.hasMoreResults() && !response.getMoreResults()) {
               scannerId = -1L;
               closed = true;
+              // Implied that no results were returned back, either.
               return null;
+            }
+            // moreResultsInRegion explicitly defines when a RS may choose to terminate a batch due
+            // to size or quantity of results in the response.
+            if (response.hasMoreResultsInRegion()) {
+              // Set what the RS said
+              setHasMoreResultsContext(true);
+              setServerHasMoreResults(response.getMoreResultsInRegion());
+            } else {
+              // Server didn't respond whether it has more results or not.
+              setHasMoreResultsContext(false);
             }
           } catch (ServiceException se) {
             throw ProtobufUtil.getRemoteException(se);
@@ -281,6 +306,20 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
     return null;
   }
 
+  /**
+   * @return true when the most recent RPC response indicated that the response was a heartbeat
+   *         message. Heartbeat messages are sent back from the server when the processing of the
+   *         scan request exceeds a certain time threshold. Heartbeats allow the server to avoid
+   *         timeouts during long running scan operations.
+   */
+  protected boolean isHeartbeatMessage() {
+    return heartbeatMessage;
+  }
+
+  protected void setHeartbeatMessage(boolean heartbeatMessage) {
+    this.heartbeatMessage = heartbeatMessage;
+  }
+
   private void incRPCcallsMetrics() {
     if (this.scanMetrics == null) {
       return;
@@ -291,7 +330,7 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
     }
   }
 
-  private void updateResultsMetrics(Result[] rrs) {
+  protected void updateResultsMetrics(Result[] rrs) {
     if (this.scanMetrics == null || rrs == null || rrs.length == 0) {
       return;
     }
@@ -307,6 +346,21 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
     }
   }
 
+  /**
+   * Use the scan metrics returned by the server to add to the identically named counters in the
+   * client side metrics. If a counter does not exist with the same name as the server side metric,
+   * the attempt to increase the counter will fail.
+   * @param response
+   */
+  private void updateServerSideMetrics(ScanResponse response) {
+    if (this.scanMetrics == null || response == null || !response.hasScanMetrics()) return;
+
+    Map<String, Long> serverMetrics = ResponseConverter.getScanMetrics(response);
+    for (Entry<String, Long> entry : serverMetrics.entrySet()) {
+      this.scanMetrics.addToCounter(entry.getKey(), entry.getValue());
+    }
+  }
+
   private void close() {
     if (this.scannerId == -1L) {
       return;
@@ -314,7 +368,7 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
     try {
       incRPCcallsMetrics();
       ScanRequest request =
-        RequestConverter.buildScanRequest(this.scannerId, 0, true);
+          RequestConverter.buildScanRequest(this.scannerId, 0, true, this.scanMetrics != null);
       try {
         getStub().scan(null, request);
       } catch (ServiceException se) {
@@ -393,5 +447,31 @@ public class ScannerCallable extends RegionServerCallable<Result[]> {
         this.getScan(), this.scanMetrics, controllerFactory, id);
     s.setCaching(this.caching);
     return s;
+  }
+
+  /**
+   * Should the client attempt to fetch more results from this region
+   * @return True if the client should attempt to fetch more results, false otherwise.
+   */
+  protected boolean getServerHasMoreResults() {
+    assert serverHasMoreResultsContext;
+    return this.serverHasMoreResults;
+  }
+
+  protected void setServerHasMoreResults(boolean serverHasMoreResults) {
+    this.serverHasMoreResults = serverHasMoreResults;
+  }
+
+  /**
+   * Did the server respond with information about whether more results might exist.
+   * Not guaranteed to respond with older server versions
+   * @return True if the server responded with information about more results.
+   */
+  protected boolean hasMoreResultsContext() {
+    return serverHasMoreResultsContext;
+  }
+
+  protected void setHasMoreResultsContext(boolean serverHasMoreResultsContext) {
+    this.serverHasMoreResultsContext = serverHasMoreResultsContext;
   }
 }

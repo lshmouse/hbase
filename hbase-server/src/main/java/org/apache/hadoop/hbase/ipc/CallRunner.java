@@ -18,12 +18,13 @@ package org.apache.hadoop.hbase.ipc;
  */
 import java.nio.channels.ClosedChannelException;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.ipc.RpcServer.Call;
 import org.apache.hadoop.hbase.monitoring.MonitoredRPCHandler;
 import org.apache.hadoop.hbase.monitoring.TaskMonitor;
-import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
@@ -35,14 +36,16 @@ import com.google.protobuf.Message;
 /**
  * The request processing logic, which is usually executed in thread pools provided by an
  * {@link RpcScheduler}.  Call {@link #run()} to actually execute the contained
- * {@link RpcServer.Call}
+ * RpcServer.Call
  */
 @InterfaceAudience.Private
 public class CallRunner {
+  private static final Log LOG = LogFactory.getLog(CallRunner.class);
+
   private Call call;
   private RpcServerInterface rpcServer;
   private MonitoredRPCHandler status;
-  private UserProvider userProvider;
+  private volatile boolean sucessful;
 
   /**
    * On construction, adds the size of this call to the running count of outstanding call sizes.
@@ -50,13 +53,12 @@ public class CallRunner {
    * time we occupy heap.
    */
   // The constructor is shutdown so only RpcServer in this class can make one of these.
-  CallRunner(final RpcServerInterface rpcServer, final Call call, UserProvider userProvider) {
+  CallRunner(final RpcServerInterface rpcServer, final Call call) {
     this.call = call;
     this.rpcServer = rpcServer;
     // Add size of the call to queue size.
     this.rpcServer.addCallSize(call.getSize());
     this.status = getStatus();
-    this.userProvider = userProvider;
   }
 
   public Call getCall() {
@@ -70,7 +72,6 @@ public class CallRunner {
     this.call = null;
     this.rpcServer = null;
     this.status = null;
-    this.userProvider = null;
   }
 
   public void run() {
@@ -101,8 +102,6 @@ public class CallRunner {
         if (call.tinfo != null) {
           traceScope = Trace.startSpan(call.toTraceString(), call.tinfo);
         }
-        RequestContext.set(userProvider.create(call.connection.user), RpcServer.getRemoteIp(),
-          call.connection.service);
         // make the call
         resultPair = this.rpcServer.call(call.service, call.md, call.param, call.cellScanner,
           call.timestamp, this.status);
@@ -117,11 +116,12 @@ public class CallRunner {
         if (traceScope != null) {
           traceScope.close();
         }
-        // Must always clear the request context to avoid leaking
-        // credentials between requests.
-        RequestContext.clear();
+        RpcServer.CurCall.set(null);
+        if (resultPair != null) {
+          this.rpcServer.addCallSize(call.getSize() * -1);
+          sucessful = true;
+        }
       }
-      RpcServer.CurCall.set(null);
       // Set the response for undelayed calls and delayed calls with
       // undelayed responses.
       if (!call.isDelayed() || !call.isReturnValueDelayed()) {
@@ -151,8 +151,9 @@ public class CallRunner {
       RpcServer.LOG.warn(Thread.currentThread().getName()
           + ": caught: " + StringUtils.stringifyException(e));
     } finally {
-      // regardless if successful or not we need to reset the callQueueSize
-      this.rpcServer.addCallSize(call.getSize() * -1);
+      if (!sucessful) {
+        this.rpcServer.addCallSize(call.getSize() * -1);
+      }
       cleanup();
     }
   }

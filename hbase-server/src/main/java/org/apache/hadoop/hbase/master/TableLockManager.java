@@ -25,17 +25,16 @@ import java.util.List;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.InterProcessLock;
 import org.apache.hadoop.hbase.InterProcessLock.MetadataHandler;
 import org.apache.hadoop.hbase.InterProcessReadWriteLock;
 import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.exceptions.LockTimeoutException;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.ZooKeeperProtos;
-import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
@@ -240,8 +239,10 @@ public abstract class TableLockManager {
           return;
         }
         LOG.debug("Table is locked by " +
-            String.format("[tableName=%s, lockOwner=%s, threadId=%s, " +
-                "purpose=%s, isShared=%s, createTime=%s]", Bytes.toString(data.getTableName().toByteArray()),
+            String.format("[tableName=%s:%s, lockOwner=%s, threadId=%s, " +
+                "purpose=%s, isShared=%s, createTime=%s]",
+                data.getTableName().getNamespace().toStringUtf8(),
+                data.getTableName().getQualifier().toStringUtf8(),
                 ProtobufUtil.toServerName(data.getLockOwner()), data.getThreadId(),
                 data.getPurpose(), data.getIsShared(), data.getCreateTime()));
       }

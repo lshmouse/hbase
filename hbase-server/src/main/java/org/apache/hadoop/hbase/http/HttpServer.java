@@ -21,7 +21,6 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.PrintStream;
-import java.io.PrintWriter;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -58,12 +57,12 @@ import org.apache.hadoop.hbase.http.conf.ConfServlet;
 import org.apache.hadoop.hbase.http.jmx.JMXJsonServlet;
 import org.apache.hadoop.hbase.http.log.LogLevel;
 import org.apache.hadoop.hbase.util.Threads;
+import org.apache.hadoop.hbase.util.ReflectionUtils;
 import org.apache.hadoop.metrics.MetricsServlet;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.authorize.AccessControlList;
-import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.Shell;
 import org.mortbay.io.Buffer;
 import org.mortbay.jetty.Connector;
@@ -95,14 +94,14 @@ import com.sun.jersey.spi.container.servlet.ServletContainer;
  * Create a Jetty embedded server to answer http requests. The primary goal
  * is to serve up status information for the server.
  * There are three contexts:
- *   "/logs/" -> points to the log directory
- *   "/static/" -> points to common static files (src/webapps/static)
- *   "/" -> the jsp server code from (src/webapps/<name>)
+ *   "/logs/" -&gt; points to the log directory
+ *   "/static/" -&gt; points to common static files (src/webapps/static)
+ *   "/" -&gt; the jsp server code from (src/webapps/&lt;name&gt;)
  */
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
 public class HttpServer implements FilterContainer {
-  public static final Log LOG = LogFactory.getLog(HttpServer.class);
+  private static final Log LOG = LogFactory.getLog(HttpServer.class);
 
   static final String FILTER_INITIALIZERS_PROPERTY
       = "hbase.http.filter.initializers";
@@ -426,7 +425,7 @@ public class HttpServer implements FilterContainer {
 
   /**
    * Create a status server on the given port.
-   * The jsp scripts are taken from src/webapps/<name>.
+   * The jsp scripts are taken from src/webapps/&lt;name&gt;.
    * @param name The name of the server
    * @param port The port to use on the server
    * @param findPort whether the server should start at the given port and
@@ -448,7 +447,7 @@ public class HttpServer implements FilterContainer {
 
   /**
    * Create a status server on the given port.
-   * The jsp scripts are taken from src/webapps/<name>.
+   * The jsp scripts are taken from src/webapps/&lt;name&gt;.
    * @param name The name of the server
    * @param bindAddress The address for this server
    * @param port The port to use on the server
@@ -467,7 +466,7 @@ public class HttpServer implements FilterContainer {
 
   /**
    * Create a status server on the given port.
-   * The jsp scripts are taken from src/webapps/<name>.
+   * The jsp scripts are taken from src/webapps/&lt;name&gt;.
    * @param name The name of the server
    * @param bindAddress The address for this server
    * @param port The port to use on the server
@@ -618,8 +617,7 @@ public class HttpServer implements FilterContainer {
 
     FilterInitializer[] initializers = new FilterInitializer[classes.length];
     for(int i = 0; i < classes.length; i++) {
-      initializers[i] = (FilterInitializer)ReflectionUtils.newInstance(
-          classes[i], conf);
+      initializers[i] = (FilterInitializer)ReflectionUtils.newInstance(classes[i]);
     }
     return initializers;
   }
@@ -1110,13 +1108,14 @@ public class HttpServer implements FilterContainer {
 
   /**
    * Checks the user has privileges to access to instrumentation servlets.
-   * <p/>
+   * <p>
    * If <code>hadoop.security.instrumentation.requires.admin</code> is set to FALSE
    * (default value) it always returns TRUE.
-   * <p/>
+   * </p><p>
    * If <code>hadoop.security.instrumentation.requires.admin</code> is set to TRUE
    * it will check that if the current user is in the admin ACLS. If the user is
    * in the admin ACLs it returns TRUE, otherwise it returns FALSE.
+   * </p>
    *
    * @param servletContext the servlet context.
    * @param request the servlet request.
@@ -1213,11 +1212,11 @@ public class HttpServer implements FilterContainer {
         return;
       }
       response.setContentType("text/plain; charset=UTF-8");
-      PrintWriter out = response.getWriter();
-      PrintStream ps = new PrintStream(response.getOutputStream(), false, "UTF-8");
-      Threads.printThreadInfo(ps, "");
-      ps.flush();
-      out.close();
+      try (PrintStream out = new PrintStream(
+        response.getOutputStream(), false, "UTF-8")) {
+        Threads.printThreadInfo(out, "");
+        out.flush();
+      }
       ReflectionUtils.logThreadInfo(LOG, "jsp requested", 1);
     }
   }

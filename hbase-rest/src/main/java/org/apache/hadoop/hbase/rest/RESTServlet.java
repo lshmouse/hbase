@@ -20,9 +20,9 @@ package org.apache.hadoop.hbase.rest;
 
 import java.io.IOException;
 
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.filter.ParseFilter;
 import org.apache.hadoop.hbase.security.UserProvider;
@@ -36,7 +36,7 @@ import org.apache.log4j.Logger;
  */
 @InterfaceAudience.Private
 public class RESTServlet implements Constants {
-  private static Logger LOG = Logger.getLogger(RESTServlet.class);
+  private static final Logger LOG = Logger.getLogger(RESTServlet.class);
   private static RESTServlet INSTANCE;
   private final Configuration conf;
   private final MetricsREST metrics = new MetricsREST();
@@ -74,7 +74,10 @@ public class RESTServlet implements Constants {
   }
 
   public synchronized static void stop() {
-    if (INSTANCE != null)  INSTANCE = null;
+    if (INSTANCE != null) {
+      INSTANCE.shutdown();
+      INSTANCE = null;
+    }
   }
 
   /**
@@ -98,7 +101,7 @@ public class RESTServlet implements Constants {
     }
   }
 
-  HBaseAdmin getAdmin() throws IOException {
+  Admin getAdmin() throws IOException {
     return connectionCache.getAdmin();
   }
 
@@ -128,6 +131,13 @@ public class RESTServlet implements Constants {
 
   void setEffectiveUser(String effectiveUser) {
     connectionCache.setEffectiveUser(effectiveUser);
+  }
+
+  /**
+   * Shutdown any services that need to stop
+   */
+  void shutdown() {
+    if (connectionCache != null) connectionCache.shutdown();
   }
 
   boolean supportsProxyuser() {

@@ -42,9 +42,7 @@ import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.mapreduce.RowCounter.RowCounterMapper;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.LauncherSecurityManager;
-import org.apache.hadoop.mapreduce.Counter;
-import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.util.GenericOptionsParser;
+import org.apache.hadoop.util.ToolRunner;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -55,7 +53,7 @@ import org.junit.experimental.categories.Category;
  */
 @Category({MapReduceTests.class, MediumTests.class})
 public class TestRowCounter {
-  final Log LOG = LogFactory.getLog(getClass());
+  private static final Log LOG = LogFactory.getLog(TestRowCounter.class);
   private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
   private final static String TABLE_NAME = "testRowCounter";
   private final static String COL_FAM = "col_fam";
@@ -157,7 +155,7 @@ public class TestRowCounter {
     long ts;
 
     // clean up content of TABLE_NAME
-    HTable table = TEST_UTIL.deleteTableData(TableName.valueOf(TABLE_NAME));
+    Table table = TEST_UTIL.deleteTableData(TableName.valueOf(TABLE_NAME));
     ts = System.currentTimeMillis();
     put1.add(family, col1, ts, Bytes.toBytes("val1"));
     table.put(put1);
@@ -207,16 +205,9 @@ public class TestRowCounter {
    * @throws Exception
    */
   private void runRowCount(String[] args, int expectedCount) throws Exception {
-    GenericOptionsParser opts = new GenericOptionsParser(
-        TEST_UTIL.getConfiguration(), args);
-    Configuration conf = opts.getConfiguration();
-    args = opts.getRemainingArgs();
-    Job job = RowCounter.createSubmittableJob(conf, args);
-    job.waitForCompletion(true);
-    assertTrue(job.isSuccessful());
-    Counter counter = job.getCounters().findCounter(
-        RowCounterMapper.Counters.ROWS);
-    assertEquals(expectedCount, counter.getValue());
+    final RowCounter counter = new RowCounter();
+    assertEquals("job failed either due to failure or miscount (see log output).", 0,
+        ToolRunner.run(TEST_UTIL.getConfiguration(), counter, args));
   }
 
   /**

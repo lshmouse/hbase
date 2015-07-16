@@ -83,7 +83,7 @@ import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
  */
 @InterfaceAudience.Private
 public final class WALPerformanceEvaluation extends Configured implements Tool {
-  static final Log LOG = LogFactory.getLog(WALPerformanceEvaluation.class.getName());
+  private static final Log LOG = LogFactory.getLog(WALPerformanceEvaluation.class.getName());
   private final MetricsRegistry metrics = new MetricsRegistry();
   private final Meter syncMeter =
     metrics.newMeter(WALPerformanceEvaluation.class, "syncMeter", "syncs", TimeUnit.MILLISECONDS);
@@ -307,7 +307,8 @@ public final class WALPerformanceEvaluation extends Configured implements Tool {
     LOG.info("FileSystem: " + fs);
 
     SpanReceiverHost receiverHost = trace ? SpanReceiverHost.getInstance(getConf()) : null;
-    TraceScope scope = Trace.startSpan("WALPerfEval", trace ? Sampler.ALWAYS : Sampler.NEVER);
+    final Sampler<?> sampler = trace ? Sampler.ALWAYS : Sampler.NEVER;
+    TraceScope scope = Trace.startSpan("WALPerfEval", sampler);
 
     try {
       if (rootRegionDir == null) {

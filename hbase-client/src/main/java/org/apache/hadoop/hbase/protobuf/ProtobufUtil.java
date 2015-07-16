@@ -37,7 +37,6 @@ import java.util.Map.Entry;
 import java.util.NavigableSet;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
@@ -53,6 +52,7 @@ import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Tag;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Append;
 import org.apache.hadoop.hbase.client.Consistency;
 import org.apache.hadoop.hbase.client.Delete;
@@ -68,7 +68,6 @@ import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.filter.ByteArrayComparable;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.io.TimeRange;
-import org.apache.hadoop.hbase.protobuf.ProtobufMagic;
 import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos;
 import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos.AccessControlService;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.AdminService;
@@ -86,6 +85,7 @@ import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.MergeRegionsReques
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.OpenRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.ServerInfo;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.SplitRegionRequest;
+import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.WarmupRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.AuthenticationProtos;
 import org.apache.hadoop.hbase.protobuf.generated.CellProtos;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
@@ -104,6 +104,7 @@ import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.MutationProto.Col
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.MutationProto.DeleteType;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.MutationProto.MutationType;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.ScanRequest;
+import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos;
 import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos.RegionLoad;
 import org.apache.hadoop.hbase.protobuf.generated.ComparatorProtos;
 import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
@@ -117,6 +118,7 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.CreateTableReques
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.GetTableDescriptorsResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.MasterService;
 import org.apache.hadoop.hbase.protobuf.generated.QuotaProtos;
+import org.apache.hadoop.hbase.protobuf.generated.RPCProtos;
 import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.RegionServerReportRequest;
 import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.RegionServerStartupRequest;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos;
@@ -125,9 +127,13 @@ import org.apache.hadoop.hbase.protobuf.generated.WALProtos.FlushDescriptor;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.FlushDescriptor.FlushAction;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.RegionEventDescriptor;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.RegionEventDescriptor.EventType;
+import org.apache.hadoop.hbase.protobuf.generated.WALProtos.BulkLoadDescriptor;
+import org.apache.hadoop.hbase.protobuf.generated.WALProtos.StoreDescriptor;
 import org.apache.hadoop.hbase.quotas.QuotaScope;
 import org.apache.hadoop.hbase.quotas.QuotaType;
 import org.apache.hadoop.hbase.quotas.ThrottleType;
+import org.apache.hadoop.hbase.replication.ReplicationLoadSink;
+import org.apache.hadoop.hbase.replication.ReplicationLoadSource;
 import org.apache.hadoop.hbase.security.access.Permission;
 import org.apache.hadoop.hbase.security.access.TablePermission;
 import org.apache.hadoop.hbase.security.access.UserPermission;
@@ -140,6 +146,7 @@ import org.apache.hadoop.hbase.util.DynamicClassLoader;
 import org.apache.hadoop.hbase.util.ExceptionUtil;
 import org.apache.hadoop.hbase.util.Methods;
 import org.apache.hadoop.hbase.util.Pair;
+import org.apache.hadoop.hbase.util.VersionInfo;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.security.token.Token;
@@ -245,7 +252,7 @@ public final class ProtobufUtil {
    * to flag what follows as a protobuf in hbase.  Prepend these bytes to all content written to
    * znodes, etc.
    * @param bytes Bytes to decorate
-   * @return The passed <code>bytes</codes> with magic prepended (Creates a new
+   * @return The passed <code>bytes</code> with magic prepended (Creates a new
    * byte array that is <code>bytes.length</code> plus {@link ProtobufMagic#PB_MAGIC}.length.
    */
   public static byte [] prependPBMagic(final byte [] bytes) {
@@ -257,22 +264,21 @@ public final class ProtobufUtil {
    * @return True if passed <code>bytes</code> has {@link ProtobufMagic#PB_MAGIC} for a prefix.
    */
   public static boolean isPBMagicPrefix(final byte [] bytes) {
-    if (bytes == null) return false;
-    return isPBMagicPrefix(bytes, 0, bytes.length);
+    return ProtobufMagic.isPBMagicPrefix(bytes);
   }
 
   /**
    * @param bytes Bytes to check.
+   * @param offset offset to start at
+   * @param len length to use
    * @return True if passed <code>bytes</code> has {@link ProtobufMagic#PB_MAGIC} for a prefix.
    */
   public static boolean isPBMagicPrefix(final byte [] bytes, int offset, int len) {
-    if (bytes == null || len < ProtobufMagic.PB_MAGIC.length) return false;
-    return Bytes.compareTo(ProtobufMagic.PB_MAGIC, 0, ProtobufMagic.PB_MAGIC.length,
-      bytes, offset, ProtobufMagic.PB_MAGIC.length) == 0;
+    return ProtobufMagic.isPBMagicPrefix(bytes, offset, len);
   }
 
   /**
-   * @param bytes
+   * @param bytes bytes to check
    * @throws DeserializationException if we are missing the pb magic prefix
    */
   public static void expectPBMagicPrefix(final byte [] bytes) throws DeserializationException {
@@ -283,10 +289,10 @@ public final class ProtobufUtil {
   }
 
   /**
-   * @return Length of {@link ProtobufMagic#PB_MAGIC}
+   * @return Length of {@link ProtobufMagic#lengthOfPBMagic()}
    */
   public static int lengthOfPBMagic() {
-    return ProtobufMagic.PB_MAGIC.length;
+    return ProtobufMagic.lengthOfPBMagic();
   }
 
   /**
@@ -1280,6 +1286,7 @@ public final class ProtobufUtil {
     }
 
     builder.setStale(result.isStale());
+    builder.setPartial(result.isPartial());
 
     return builder.build();
   }
@@ -1338,7 +1345,7 @@ public final class ProtobufUtil {
     for (CellProtos.Cell c : values) {
       cells.add(toCell(c));
     }
-    return Result.create(cells, null, proto.getStale());
+    return Result.create(cells, null, proto.getStale(), proto.getPartial());
   }
 
   /**
@@ -1721,6 +1728,26 @@ public final class ProtobufUtil {
     }
   }
 
+  /**
+   * A helper to warmup a region given a region name
+   * using admin protocol
+   *
+   * @param admin
+   * @param regionInfo
+   *
+   */
+  public static void warmupRegion(final AdminService.BlockingInterface admin,
+      final HRegionInfo regionInfo) throws IOException  {
+
+    try {
+      WarmupRegionRequest warmupRegionRequest =
+           RequestConverter.buildWarmupRegionRequest(regionInfo);
+
+      admin.warmupRegion(null, warmupRegionRequest);
+    } catch (ServiceException e) {
+      throw getRemoteException(e);
+    }
+  }
 
   /**
    * A helper to open a region using admin protocol.
@@ -1738,6 +1765,7 @@ public final class ProtobufUtil {
       throw ProtobufUtil.getRemoteException(se);
     }
   }
+
 
   /**
    * A helper to get the all the online regions on a region
@@ -2091,7 +2119,7 @@ public final class ProtobufUtil {
   }
 
   /**
-   * Convert a ListMultimap<String, TablePermission> where key is username
+   * Convert a ListMultimap&lt;String, TablePermission&gt; where key is username
    * to a protobuf UserPermission
    *
    * @param perm the list of user and table permissions
@@ -2345,7 +2373,7 @@ public final class ProtobufUtil {
 
   /**
    * Convert a protobuf UserTablePermissions to a
-   * ListMultimap<String, TablePermission> where key is username.
+   * ListMultimap&lt;String, TablePermission&gt; where key is username.
    *
    * @param proto the protobuf UserPermission
    * @return the converted UserPermission
@@ -2560,7 +2588,7 @@ public final class ProtobufUtil {
     // input / output paths are relative to the store dir
     // store dir is relative to region dir
     CompactionDescriptor.Builder builder = CompactionDescriptor.newBuilder()
-        .setTableName(ByteStringer.wrap(info.getTableName()))
+        .setTableName(ByteStringer.wrap(info.getTable().toBytes()))
         .setEncodedRegionName(ByteStringer.wrap(info.getEncodedNameAsBytes()))
         .setFamilyName(ByteStringer.wrap(family))
         .setStoreHomeDir(storeDir.getName()); //make relative
@@ -2579,6 +2607,7 @@ public final class ProtobufUtil {
     FlushDescriptor.Builder desc = FlushDescriptor.newBuilder()
         .setAction(action)
         .setEncodedRegionName(ByteStringer.wrap(hri.getEncodedNameAsBytes()))
+        .setRegionName(ByteStringer.wrap(hri.getRegionName()))
         .setFlushSequenceNumber(flushSeqId)
         .setTableName(ByteStringer.wrap(hri.getTable().getName()));
 
@@ -2604,12 +2633,12 @@ public final class ProtobufUtil {
         .setEventType(eventType)
         .setTableName(ByteStringer.wrap(hri.getTable().getName()))
         .setEncodedRegionName(ByteStringer.wrap(hri.getEncodedNameAsBytes()))
+        .setRegionName(ByteStringer.wrap(hri.getRegionName()))
         .setLogSequenceNumber(seqId)
         .setServer(toServerName(server));
 
     for (Map.Entry<byte[], List<Path>> entry : storeFiles.entrySet()) {
-      RegionEventDescriptor.StoreDescriptor.Builder builder
-        = RegionEventDescriptor.StoreDescriptor.newBuilder()
+      StoreDescriptor.Builder builder = StoreDescriptor.newBuilder()
           .setFamilyName(ByteStringer.wrap(entry.getKey()))
           .setStoreHomeDir(Bytes.toString(entry.getKey()));
       for (Path path : entry.getValue()) {
@@ -2875,6 +2904,10 @@ public final class ProtobufUtil {
     switch (proto) {
       case REQUEST_NUMBER: return ThrottleType.REQUEST_NUMBER;
       case REQUEST_SIZE:   return ThrottleType.REQUEST_SIZE;
+      case WRITE_NUMBER:   return ThrottleType.WRITE_NUMBER;
+      case WRITE_SIZE:     return ThrottleType.WRITE_SIZE;
+      case READ_NUMBER:    return ThrottleType.READ_NUMBER;
+      case READ_SIZE:      return ThrottleType.READ_SIZE;
     }
     throw new RuntimeException("Invalid ThrottleType " + proto);
   }
@@ -2889,6 +2922,10 @@ public final class ProtobufUtil {
     switch (type) {
       case REQUEST_NUMBER: return QuotaProtos.ThrottleType.REQUEST_NUMBER;
       case REQUEST_SIZE:   return QuotaProtos.ThrottleType.REQUEST_SIZE;
+      case WRITE_NUMBER:   return QuotaProtos.ThrottleType.WRITE_NUMBER;
+      case WRITE_SIZE:     return QuotaProtos.ThrottleType.WRITE_SIZE;
+      case READ_NUMBER:    return QuotaProtos.ThrottleType.READ_NUMBER;
+      case READ_SIZE:      return QuotaProtos.ThrottleType.READ_SIZE;
     }
     throw new RuntimeException("Invalid ThrottleType " + type);
   }
@@ -2962,5 +2999,71 @@ public final class ProtobufUtil {
             .setTimeUnit(toProtoTimeUnit(timeUnit))
             .setScope(toProtoQuotaScope(scope))
             .build();
+  }
+
+  /**
+   * Generates a marker for the WAL so that we propagate the notion of a bulk region load
+   * throughout the WAL.
+   *
+   * @param tableName         The tableName into which the bulk load is being imported into.
+   * @param encodedRegionName Encoded region name of the region which is being bulk loaded.
+   * @param storeFiles        A set of store files of a column family are bulk loaded.
+   * @param bulkloadSeqId     sequence ID (by a force flush) used to create bulk load hfile
+   *                          name
+   * @return The WAL log marker for bulk loads.
+   */
+  public static WALProtos.BulkLoadDescriptor toBulkLoadDescriptor(TableName tableName,
+      ByteString encodedRegionName, Map<byte[], List<Path>> storeFiles, long bulkloadSeqId) {
+    BulkLoadDescriptor.Builder desc = BulkLoadDescriptor.newBuilder()
+        .setTableName(ProtobufUtil.toProtoTableName(tableName))
+        .setEncodedRegionName(encodedRegionName).setBulkloadSeqNum(bulkloadSeqId);
+
+    for (Map.Entry<byte[], List<Path>> entry : storeFiles.entrySet()) {
+      WALProtos.StoreDescriptor.Builder builder = StoreDescriptor.newBuilder()
+          .setFamilyName(ByteStringer.wrap(entry.getKey()))
+          .setStoreHomeDir(Bytes.toString(entry.getKey())); // relative to region
+      for (Path path : entry.getValue()) {
+        builder.addStoreFile(path.getName());
+      }
+      desc.addStores(builder);
+    }
+
+    return desc.build();
+  }
+
+  public static ReplicationLoadSink toReplicationLoadSink(
+      ClusterStatusProtos.ReplicationLoadSink cls) {
+    return new ReplicationLoadSink(cls.getAgeOfLastAppliedOp(), cls.getTimeStampsOfLastAppliedOp());
+  }
+
+  public static ReplicationLoadSource toReplicationLoadSource(
+      ClusterStatusProtos.ReplicationLoadSource cls) {
+    return new ReplicationLoadSource(cls.getPeerID(), cls.getAgeOfLastShippedOp(),
+        cls.getSizeOfLogQueue(), cls.getTimeStampOfLastShippedOp(), cls.getReplicationLag());
+  }
+
+  public static List<ReplicationLoadSource> toReplicationLoadSourceList(
+      List<ClusterStatusProtos.ReplicationLoadSource> clsList) {
+    ArrayList<ReplicationLoadSource> rlsList = new ArrayList<ReplicationLoadSource>();
+    for (ClusterStatusProtos.ReplicationLoadSource cls : clsList) {
+      rlsList.add(toReplicationLoadSource(cls));
+    }
+    return rlsList;
+  }
+
+  /**
+   * Get a protocol buffer VersionInfo
+   *
+   * @return the converted protocol buffer VersionInfo
+   */
+  public static RPCProtos.VersionInfo getVersionInfo() {
+    RPCProtos.VersionInfo.Builder builder = RPCProtos.VersionInfo.newBuilder();
+    builder.setVersion(VersionInfo.getVersion());
+    builder.setUrl(VersionInfo.getUrl());
+    builder.setRevision(VersionInfo.getRevision());
+    builder.setUser(VersionInfo.getUser());
+    builder.setDate(VersionInfo.getDate());
+    builder.setSrcChecksum(VersionInfo.getSrcChecksum());
+    return builder.build();
   }
 }

@@ -41,12 +41,11 @@ import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
-import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
-
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -102,16 +101,16 @@ public class TestImportTSVWithTTLs implements Configurable {
 
   @Test
   public void testMROnTable() throws Exception {
-    String tableName = "test-" + UUID.randomUUID();
+    TableName tableName = TableName.valueOf("test-" + UUID.randomUUID());
 
     // Prepare the arguments required for the test.
     String[] args = new String[] {
         "-D" + ImportTsv.MAPPER_CONF_KEY
             + "=org.apache.hadoop.hbase.mapreduce.TsvImporterMapper",
         "-D" + ImportTsv.COLUMNS_CONF_KEY + "=HBASE_ROW_KEY,FAM:A,FAM:B,HBASE_CELL_TTL",
-        "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b", tableName };
+        "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b", tableName.getNameAsString() };
     String data = "KEY\u001bVALUE1\u001bVALUE2\u001b1000000\n";
-    util.createTable(TableName.valueOf(tableName), FAMILY);
+    util.createTable(tableName, FAMILY);
     doMROnTableTest(util, FAMILY, data, args, 1);
     util.deleteTable(tableName);
   }
@@ -159,7 +158,7 @@ public class TestImportTSVWithTTLs implements Configurable {
     @Override
     public void prePut(ObserverContext<RegionCoprocessorEnvironment> e, Put put, WALEdit edit,
         Durability durability) throws IOException {
-      HRegion region = e.getEnvironment().getRegion();
+      Region region = e.getEnvironment().getRegion();
       if (!region.getRegionInfo().isMetaTable()
           && !region.getRegionInfo().getTable().isSystemTable()) {
         // The put carries the TTL attribute

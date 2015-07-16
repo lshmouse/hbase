@@ -28,7 +28,6 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.CoordinatedStateManagerFactory;
@@ -37,8 +36,10 @@ import org.apache.hadoop.hbase.LocalHBaseCluster;
 import org.apache.hadoop.hbase.MasterNotRunningException;
 import org.apache.hadoop.hbase.ZNodeClearer;
 import org.apache.hadoop.hbase.ZooKeeperConnectionException;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.util.JVMClusterUtil;
 import org.apache.hadoop.hbase.util.ServerCommandLine;
@@ -95,7 +96,7 @@ public class HMasterCommandLine extends ServerCommandLine {
     if (cmd.hasOption("minRegionServers")) {
       String val = cmd.getOptionValue("minRegionServers");
       getConf().setInt("hbase.regions.server.count.min",
-                  Integer.valueOf(val));
+                  Integer.parseInt(val));
       LOG.debug("minRegionServers set to " + val);
     }
 
@@ -103,7 +104,7 @@ public class HMasterCommandLine extends ServerCommandLine {
     if (cmd.hasOption("minServers")) {
       String val = cmd.getOptionValue("minServers");
       getConf().setInt("hbase.regions.server.count.min",
-                  Integer.valueOf(val));
+                  Integer.parseInt(val));
       LOG.debug("minServers set to " + val);
     }
 
@@ -116,13 +117,13 @@ public class HMasterCommandLine extends ServerCommandLine {
     // master when we are in local/standalone mode. Useful testing)
     if (cmd.hasOption("localRegionServers")) {
       String val = cmd.getOptionValue("localRegionServers");
-      getConf().setInt("hbase.regionservers", Integer.valueOf(val));
+      getConf().setInt("hbase.regionservers", Integer.parseInt(val));
       LOG.debug("localRegionServers set to " + val);
     }
     // How many masters to startup inside this process; useful testing
     if (cmd.hasOption("masters")) {
       String val = cmd.getOptionValue("masters");
-      getConf().setInt("hbase.masters", Integer.valueOf(val));
+      getConf().setInt("hbase.masters", Integer.parseInt(val));
       LOG.debug("masters set to " + val);
     }
 
@@ -156,12 +157,46 @@ public class HMasterCommandLine extends ServerCommandLine {
         DefaultMetricsSystem.setMiniClusterMode(true);
         final MiniZooKeeperCluster zooKeeperCluster = new MiniZooKeeperCluster(conf);
         File zkDataPath = new File(conf.get(HConstants.ZOOKEEPER_DATA_DIR));
-        int zkClientPort = conf.getInt(HConstants.ZOOKEEPER_CLIENT_PORT, 0);
+
+        // find out the default client port
+        int zkClientPort = 0;
+
+        // If the zookeeper client port is specified in server quorum, use it.
+        String zkserver = conf.get(HConstants.ZOOKEEPER_QUORUM);
+        if (zkserver != null) {
+          String[] zkservers = zkserver.split(",");
+
+          if (zkservers.length > 1) {
+            // In local mode deployment, we have the master + a region server and zookeeper server
+            // started in the same process. Therefore, we only support one zookeeper server.
+            String errorMsg = "Could not start ZK with " + zkservers.length +
+                " ZK servers in local mode deployment. Aborting as clients (e.g. shell) will not "
+                + "be able to find this ZK quorum.";
+              System.err.println(errorMsg);
+              throw new IOException(errorMsg);
+          }
+
+          String[] parts = zkservers[0].split(":");
+
+          if (parts.length == 2) {
+            // the second part is the client port
+            zkClientPort = Integer.parseInt(parts [1]);
+          }
+        }
+        // If the client port could not be find in server quorum conf, try another conf
         if (zkClientPort == 0) {
-          throw new IOException("No config value for "
-              + HConstants.ZOOKEEPER_CLIENT_PORT);
+          zkClientPort = conf.getInt(HConstants.ZOOKEEPER_CLIENT_PORT, 0);
+          // The client port has to be set by now; if not, throw exception.
+          if (zkClientPort == 0) {
+            throw new IOException("No config value for " + HConstants.ZOOKEEPER_CLIENT_PORT);
+          }
         }
         zooKeeperCluster.setDefaultClientPort(zkClientPort);
+        // set the ZK tick time if specified
+        int zkTickTime = conf.getInt(HConstants.ZOOKEEPER_TICK_TIME, 0);
+        if (zkTickTime > 0) {
+          zooKeeperCluster.setTickTime(zkTickTime);
+        }
 
         // login the zookeeper server principal (if using security)
         ZKUtil.loginServer(conf, "hbase.zookeeper.server.keytab.file",
@@ -180,6 +215,7 @@ public class HMasterCommandLine extends ServerCommandLine {
           throw new IOException(errorMsg);
         }
         conf.set(HConstants.ZOOKEEPER_CLIENT_PORT, Integer.toString(clientPort));
+
         // Need to have the zk cluster shutdown when master is shutdown.
         // Run a subclass that does the zk cluster shutdown on its way out.
         int mastersCount = conf.getInt("hbase.masters", 1);
@@ -214,12 +250,16 @@ public class HMasterCommandLine extends ServerCommandLine {
 
   @SuppressWarnings("resource")
   private int stopMaster() {
-    Admin adm = null;
-    try {
-      Configuration conf = getConf();
-      // Don't try more than once
-      conf.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 1);
-      adm = new HBaseAdmin(getConf());
+    Configuration conf = getConf();
+    // Don't try more than once
+    conf.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 1);
+    try (Connection connection = ConnectionFactory.createConnection(conf)) {
+      try (Admin admin = connection.getAdmin()) {
+        connection.getAdmin().shutdown();
+      } catch (Throwable t) {
+        LOG.error("Failed to stop master", t);
+        return 1;
+      }
     } catch (MasterNotRunningException e) {
       LOG.error("Master not running");
       return 1;
@@ -228,12 +268,6 @@ public class HMasterCommandLine extends ServerCommandLine {
       return 1;
     } catch (IOException e) {
       LOG.error("Got IOException: " +e.getMessage(), e);
-      return 1;
-    }
-    try {
-      adm.shutdown();
-    } catch (Throwable t) {
-      LOG.error("Failed to stop master", t);
       return 1;
     }
     return 0;
@@ -254,7 +288,8 @@ public class HMasterCommandLine extends ServerCommandLine {
     }
   }
 
-  private static void closeAllRegionServerThreads(List<JVMClusterUtil.RegionServerThread> regionservers) {
+  private static void closeAllRegionServerThreads(
+      List<JVMClusterUtil.RegionServerThread> regionservers) {
     for(JVMClusterUtil.RegionServerThread t : regionservers){
       t.getRegionServer().stop("HMaster Aborted; Bringing down regions servers");
     }

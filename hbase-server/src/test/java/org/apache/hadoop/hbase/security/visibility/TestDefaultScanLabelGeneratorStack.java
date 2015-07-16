@@ -20,7 +20,6 @@ package org.apache.hadoop.hbase.security.visibility;
 import static org.apache.hadoop.hbase.security.visibility.VisibilityConstants.LABELS_TABLE_NAME;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNull;
 
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
@@ -33,8 +32,6 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.Get;
-import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
@@ -89,9 +86,9 @@ public class TestDefaultScanLabelGeneratorStack {
     // Set up for the test
     SUPERUSER.runAs(new PrivilegedExceptionAction<Void>() {
       public Void run() throws Exception {
-        try {
-          VisibilityClient.addLabels(conf, new String[] { SECRET, CONFIDENTIAL });
-          VisibilityClient.setAuths(conf, new String[] { CONFIDENTIAL }, TESTUSER.getShortName());
+        try (Connection conn = ConnectionFactory.createConnection(conf)) {
+          VisibilityClient.addLabels(conn, new String[] { SECRET, CONFIDENTIAL });
+          VisibilityClient.setAuths(conn, new String[] { CONFIDENTIAL }, TESTUSER.getShortName());
         } catch (Throwable t) {
           throw new IOException(t);
         }
@@ -106,9 +103,8 @@ public class TestDefaultScanLabelGeneratorStack {
 
     SUPERUSER.runAs(new PrivilegedExceptionAction<Void>() {
       public Void run() throws Exception {
-        Connection connection = ConnectionFactory.createConnection(conf);
-        Table table = TEST_UTIL.createTable(tableName, CF);
-        try {
+        try (Connection connection = ConnectionFactory.createConnection(conf);
+             Table table = TEST_UTIL.createTable(tableName, CF)) {
           Put put = new Put(ROW_1);
           put.add(CF, Q1, HConstants.LATEST_TIMESTAMP, value1);
           put.setCellVisibility(new CellVisibility(SECRET));
@@ -121,9 +117,6 @@ public class TestDefaultScanLabelGeneratorStack {
           put.add(CF, Q3, HConstants.LATEST_TIMESTAMP, value3);
           table.put(put);
           return null;
-        } finally {
-          table.close();
-          connection.close();
         }
       }
     });
@@ -131,9 +124,8 @@ public class TestDefaultScanLabelGeneratorStack {
     // Test that super user can see all the cells.
     SUPERUSER.runAs(new PrivilegedExceptionAction<Void>() {
       public Void run() throws Exception {
-        Connection connection = ConnectionFactory.createConnection(conf);
-        Table table = connection.getTable(tableName);
-        try {
+        try (Connection connection = ConnectionFactory.createConnection(conf);
+             Table table = connection.getTable(tableName)) {
           Scan s = new Scan();
           ResultScanner scanner = table.getScanner(s);
           Result[] next = scanner.next(1);
@@ -145,34 +137,36 @@ public class TestDefaultScanLabelGeneratorStack {
           Cell current = cellScanner.current();
           assertTrue(Bytes.equals(current.getRowArray(), current.getRowOffset(),
               current.getRowLength(), ROW_1, 0, ROW_1.length));
-          assertTrue(Bytes.equals(current.getQualifier(), Q1));
-          assertTrue(Bytes.equals(current.getValue(), value1));
+          assertTrue(Bytes.equals(current.getQualifierArray(), current.getQualifierOffset(),
+            current.getQualifierLength(), Q1, 0, Q1.length));
+          assertTrue(Bytes.equals(current.getValueArray(), current.getValueOffset(),
+            current.getValueLength(), value1, 0, value1.length));
           cellScanner.advance();
           current = cellScanner.current();
           assertTrue(Bytes.equals(current.getRowArray(), current.getRowOffset(),
-              current.getRowLength(), ROW_1, 0, ROW_1.length));
-          assertTrue(Bytes.equals(current.getQualifier(), Q2));
-          assertTrue(Bytes.equals(current.getValue(), value2));
+            current.getRowLength(), ROW_1, 0, ROW_1.length));
+          assertTrue(Bytes.equals(current.getQualifierArray(), current.getQualifierOffset(),
+            current.getQualifierLength(), Q2, 0, Q2.length));
+          assertTrue(Bytes.equals(current.getValueArray(), current.getValueOffset(),
+            current.getValueLength(), value2, 0, value2.length));
           cellScanner.advance();
           current = cellScanner.current();
           assertTrue(Bytes.equals(current.getRowArray(), current.getRowOffset(),
-              current.getRowLength(), ROW_1, 0, ROW_1.length));
-          assertTrue(Bytes.equals(current.getQualifier(), Q3));
-          assertTrue(Bytes.equals(current.getValue(), value3));
+            current.getRowLength(), ROW_1, 0, ROW_1.length));
+          assertTrue(Bytes.equals(current.getQualifierArray(), current.getQualifierOffset(),
+            current.getQualifierLength(), Q3, 0, Q3.length));
+          assertTrue(Bytes.equals(current.getValueArray(), current.getValueOffset(),
+            current.getValueLength(), value3, 0, value3.length));
 
           return null;
-        } finally {
-          table.close();
-          connection.close();
         }
       }
     });
 
     TESTUSER.runAs(new PrivilegedExceptionAction<Void>() {
       public Void run() throws Exception {
-        Connection connection = ConnectionFactory.createConnection(conf);
-        Table table = connection.getTable(tableName);
-        try {
+        try (Connection connection = ConnectionFactory.createConnection(conf);
+             Table table = connection.getTable(tableName)) {
           // Test scan with no auth attribute
           Scan s = new Scan();
           ResultScanner scanner = table.getScanner(s);
@@ -185,15 +179,19 @@ public class TestDefaultScanLabelGeneratorStack {
           // test user can see value2 (CONFIDENTIAL) and value3 (no label)
           assertTrue(Bytes.equals(current.getRowArray(), current.getRowOffset(),
               current.getRowLength(), ROW_1, 0, ROW_1.length));
-          assertTrue(Bytes.equals(current.getQualifier(), Q2));
-          assertTrue(Bytes.equals(current.getValue(), value2));
+          assertTrue(Bytes.equals(current.getQualifierArray(), current.getQualifierOffset(),
+            current.getQualifierLength(), Q2, 0, Q2.length));
+          assertTrue(Bytes.equals(current.getValueArray(), current.getValueOffset(),
+            current.getValueLength(), value2, 0, value2.length));
           cellScanner.advance();
           current = cellScanner.current();
           // test user can see value2 (CONFIDENTIAL) and value3 (no label)
           assertTrue(Bytes.equals(current.getRowArray(), current.getRowOffset(),
               current.getRowLength(), ROW_1, 0, ROW_1.length));
-          assertTrue(Bytes.equals(current.getQualifier(), Q3));
-          assertTrue(Bytes.equals(current.getValue(), value3));
+          assertTrue(Bytes.equals(current.getQualifierArray(), current.getQualifierOffset(),
+            current.getQualifierLength(), Q3, 0, Q3.length));
+          assertTrue(Bytes.equals(current.getValueArray(), current.getValueOffset(),
+            current.getValueLength(), value3, 0, value3.length));
 
           // Test scan with correct auth attribute for test user
           Scan s1 = new Scan();
@@ -210,15 +208,19 @@ public class TestDefaultScanLabelGeneratorStack {
           // test user can see value2 (CONFIDENTIAL) and value3 (no label)
           assertTrue(Bytes.equals(current1.getRowArray(), current1.getRowOffset(),
             current1.getRowLength(), ROW_1, 0, ROW_1.length));
-          assertTrue(Bytes.equals(current1.getQualifier(), Q2));
-          assertTrue(Bytes.equals(current1.getValue(), value2));
+          assertTrue(Bytes.equals(current1.getQualifierArray(), current1.getQualifierOffset(),
+            current1.getQualifierLength(), Q2, 0, Q2.length));
+          assertTrue(Bytes.equals(current1.getValueArray(), current1.getValueOffset(),
+            current1.getValueLength(), value2, 0, value2.length));
           cellScanner1.advance();
           current1 = cellScanner1.current();
           // test user can see value2 (CONFIDENTIAL) and value3 (no label)
           assertTrue(Bytes.equals(current1.getRowArray(), current1.getRowOffset(),
             current1.getRowLength(), ROW_1, 0, ROW_1.length));
-          assertTrue(Bytes.equals(current1.getQualifier(), Q3));
-          assertTrue(Bytes.equals(current1.getValue(), value3));
+          assertTrue(Bytes.equals(current1.getQualifierArray(), current1.getQualifierOffset(),
+            current1.getQualifierLength(), Q3, 0, Q3.length));
+          assertTrue(Bytes.equals(current1.getValueArray(), current1.getValueOffset(),
+            current1.getValueLength(), value3, 0, value3.length));
 
           // Test scan with incorrect auth attribute for test user
           Scan s2 = new Scan();
@@ -233,15 +235,14 @@ public class TestDefaultScanLabelGeneratorStack {
           // This scan will only see value3 (no label)
           assertTrue(Bytes.equals(current2.getRowArray(), current2.getRowOffset(),
             current2.getRowLength(), ROW_1, 0, ROW_1.length));
-          assertTrue(Bytes.equals(current2.getQualifier(), Q3));
-          assertTrue(Bytes.equals(current2.getValue(), value3));
+          assertTrue(Bytes.equals(current2.getQualifierArray(), current2.getQualifierOffset(),
+            current2.getQualifierLength(), Q3, 0, Q3.length));
+          assertTrue(Bytes.equals(current2.getValueArray(), current2.getValueOffset(),
+            current2.getValueLength(), value3, 0, value3.length));
 
           assertFalse(cellScanner2.advance());
 
           return null;
-        } finally {
-          table.close();
-          connection.close();
         }
       }
     });

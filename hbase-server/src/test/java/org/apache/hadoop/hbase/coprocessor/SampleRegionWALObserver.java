@@ -20,19 +20,19 @@
 package org.apache.hadoop.hbase.coprocessor;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Arrays;
+import java.util.List;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.regionserver.wal.HLogKey;
-import org.apache.hadoop.hbase.wal.WALKey;
 import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.wal.WALKey;
 
 /**
  * Class for testing WALObserver coprocessor.
@@ -109,7 +109,7 @@ implements WALObserver {
       HRegionInfo info, WALKey logKey, WALEdit logEdit) throws IOException {
     boolean bypass = false;
     // check table name matches or not.
-    if (!Bytes.equals(info.getTableName(), this.tableName)) {
+    if (!Bytes.equals(info.getTable().toBytes(), this.tableName)) {
       return bypass;
     }
     preWALWriteCalled = true;
@@ -119,8 +119,8 @@ implements WALObserver {
     Cell deletedCell = null;
     for (Cell cell : cells) {
       // assume only one kv from the WALEdit matches.
-      byte[] family = cell.getFamily();
-      byte[] qulifier = cell.getQualifier();
+      byte[] family = CellUtil.cloneFamily(cell);
+      byte[] qulifier = CellUtil.cloneQualifier(cell);
 
       if (Arrays.equals(family, ignoredFamily) &&
           Arrays.equals(qulifier, ignoredQualifier)) {

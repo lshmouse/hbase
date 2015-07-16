@@ -34,7 +34,6 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Get;
-import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
@@ -116,9 +115,9 @@ public class TestVisibilityLabelsWithACL {
   public void testScanForUserWithFewerLabelAuthsThanLabelsInScanAuthorizations() throws Throwable {
     String[] auths = { SECRET };
     String user = "user2";
-    VisibilityClient.setAuths(conf, auths, user);
+    VisibilityClient.setAuths(TEST_UTIL.getConnection(), auths, user);
     TableName tableName = TableName.valueOf(TEST_NAME.getMethodName());
-    final HTable table = createTableAndWriteDataWithLabels(tableName, SECRET + "&" + CONFIDENTIAL
+    final Table table = createTableAndWriteDataWithLabels(tableName, SECRET + "&" + CONFIDENTIAL
         + "&!" + PRIVATE, SECRET + "&!" + PRIVATE);
     SecureTestUtil.grantOnTable(TEST_UTIL, NORMAL_USER2.getShortName(), tableName,
       null, null, Permission.Action.READ);
@@ -126,18 +125,14 @@ public class TestVisibilityLabelsWithACL {
       public Void run() throws Exception {
         Scan s = new Scan();
         s.setAuthorizations(new Authorizations(SECRET, CONFIDENTIAL));
-        Connection connection = ConnectionFactory.createConnection(conf);
-        Table t = connection.getTable(table.getName());
-        try {
+        try (Connection connection = ConnectionFactory.createConnection(conf);
+             Table t = connection.getTable(table.getName())) {
           ResultScanner scanner = t.getScanner(s);
           Result result = scanner.next();
           assertTrue(!result.isEmpty());
           assertTrue(Bytes.equals(Bytes.toBytes("row2"), result.getRow()));
           result = scanner.next();
           assertNull(result);
-        } finally {
-          t.close();
-          connection.close();
         }
         return null;
       }
@@ -149,21 +144,21 @@ public class TestVisibilityLabelsWithACL {
   public void testScanForSuperUserWithFewerLabelAuths() throws Throwable {
     String[] auths = { SECRET };
     String user = "admin";
-    VisibilityClient.setAuths(conf, auths, user);
+    try (Connection conn = ConnectionFactory.createConnection(conf)) {
+      VisibilityClient.setAuths(conn, auths, user);
+    }
     TableName tableName = TableName.valueOf(TEST_NAME.getMethodName());
-    final HTable table = createTableAndWriteDataWithLabels(tableName, SECRET + "&" + CONFIDENTIAL
+    final Table table = createTableAndWriteDataWithLabels(tableName, SECRET + "&" + CONFIDENTIAL
         + "&!" + PRIVATE, SECRET + "&!" + PRIVATE);
     PrivilegedExceptionAction<Void> scanAction = new PrivilegedExceptionAction<Void>() {
       public Void run() throws Exception {
         Scan s = new Scan();
         s.setAuthorizations(new Authorizations(SECRET, CONFIDENTIAL));
-        Table t = TEST_UTIL.getConnection().getTable(table.getName());
-        try {
+        try (Connection connection = ConnectionFactory.createConnection(conf);
+             Table t = connection.getTable(table.getName())) {
           ResultScanner scanner = t.getScanner(s);
           Result[] result = scanner.next(5);
           assertTrue(result.length == 2);
-        } finally {
-          t.close();
         }
         return null;
       }
@@ -175,20 +170,18 @@ public class TestVisibilityLabelsWithACL {
   public void testGetForSuperUserWithFewerLabelAuths() throws Throwable {
     String[] auths = { SECRET };
     String user = "admin";
-    VisibilityClient.setAuths(conf, auths, user);
+    VisibilityClient.setAuths(TEST_UTIL.getConnection(), auths, user);
     TableName tableName = TableName.valueOf(TEST_NAME.getMethodName());
-    final HTable table = createTableAndWriteDataWithLabels(tableName, SECRET + "&" + CONFIDENTIAL
+    final Table table = createTableAndWriteDataWithLabels(tableName, SECRET + "&" + CONFIDENTIAL
         + "&!" + PRIVATE, SECRET + "&!" + PRIVATE);
     PrivilegedExceptionAction<Void> scanAction = new PrivilegedExceptionAction<Void>() {
       public Void run() throws Exception {
         Get g = new Get(row1);
         g.setAuthorizations(new Authorizations(SECRET, CONFIDENTIAL));
-        Table t = TEST_UTIL.getConnection().getTable(table.getName());
-        try {
+        try (Connection connection = ConnectionFactory.createConnection(conf);
+             Table t = connection.getTable(table.getName())) {
           Result result = t.get(g);
           assertTrue(!result.isEmpty());
-        } finally {
-          t.close();
         }
         return null;
       }
@@ -200,10 +193,12 @@ public class TestVisibilityLabelsWithACL {
   public void testVisibilityLabelsForUserWithNoAuths() throws Throwable {
     String user = "admin";
     String[] auths = { SECRET };
-    VisibilityClient.clearAuths(conf, auths, user); // Removing all auths if any.
-    VisibilityClient.setAuths(conf, auths, "user1");
+    try (Connection conn = ConnectionFactory.createConnection(conf)) {
+      VisibilityClient.clearAuths(conn, auths, user); // Removing all auths if any.
+      VisibilityClient.setAuths(conn, auths, "user1");
+    }
     TableName tableName = TableName.valueOf(TEST_NAME.getMethodName());
-    final HTable table = createTableAndWriteDataWithLabels(tableName, SECRET);
+    final Table table = createTableAndWriteDataWithLabels(tableName, SECRET);
     SecureTestUtil.grantOnTable(TEST_UTIL, NORMAL_USER1.getShortName(), tableName,
       null, null, Permission.Action.READ);
     SecureTestUtil.grantOnTable(TEST_UTIL, NORMAL_USER2.getShortName(), tableName,
@@ -212,14 +207,10 @@ public class TestVisibilityLabelsWithACL {
       public Void run() throws Exception {
         Get g = new Get(row1);
         g.setAuthorizations(new Authorizations(SECRET, CONFIDENTIAL));
-        Connection connection = ConnectionFactory.createConnection(conf);
-        Table t = connection.getTable(table.getName());
-        try {
+        try (Connection connection = ConnectionFactory.createConnection(conf);
+             Table t = connection.getTable(table.getName())) {
           Result result = t.get(g);
           assertTrue(result.isEmpty());
-        } finally {
-          t.close();
-          connection.close();
         }
         return null;
       }
@@ -232,8 +223,8 @@ public class TestVisibilityLabelsWithACL {
     PrivilegedExceptionAction<VisibilityLabelsResponse> action = 
         new PrivilegedExceptionAction<VisibilityLabelsResponse>() {
       public VisibilityLabelsResponse run() throws Exception {
-        try {
-          return VisibilityClient.addLabels(conf, new String[] { "l1", "l2" });
+        try (Connection conn = ConnectionFactory.createConnection(conf)) {
+          return VisibilityClient.addLabels(conn, new String[] { "l1", "l2" });
         } catch (Throwable e) {
         }
         return null;
@@ -247,8 +238,8 @@ public class TestVisibilityLabelsWithACL {
 
     action = new PrivilegedExceptionAction<VisibilityLabelsResponse>() {
       public VisibilityLabelsResponse run() throws Exception {
-        try {
-          return VisibilityClient.setAuths(conf, new String[] { CONFIDENTIAL, PRIVATE }, "user1");
+        try (Connection conn = ConnectionFactory.createConnection(conf)) {
+          return VisibilityClient.setAuths(conn, new String[] { CONFIDENTIAL, PRIVATE }, "user1");
         } catch (Throwable e) {
         }
         return null;
@@ -262,8 +253,8 @@ public class TestVisibilityLabelsWithACL {
 
     action = new PrivilegedExceptionAction<VisibilityLabelsResponse>() {
       public VisibilityLabelsResponse run() throws Exception {
-        try {
-          return VisibilityClient.setAuths(conf, new String[] { CONFIDENTIAL, PRIVATE }, "user1");
+        try (Connection conn = ConnectionFactory.createConnection(conf)) {
+          return VisibilityClient.setAuths(conn, new String[] { CONFIDENTIAL, PRIVATE }, "user1");
         } catch (Throwable e) {
         }
         return null;
@@ -275,8 +266,9 @@ public class TestVisibilityLabelsWithACL {
 
     action = new PrivilegedExceptionAction<VisibilityLabelsResponse>() {
       public VisibilityLabelsResponse run() throws Exception {
-        try {
-          return VisibilityClient.clearAuths(conf, new String[] { CONFIDENTIAL, PRIVATE }, "user1");
+        try (Connection conn = ConnectionFactory.createConnection(conf)) {
+          return VisibilityClient.clearAuths(conn, new String[] {
+              CONFIDENTIAL, PRIVATE }, "user1");
         } catch (Throwable e) {
         }
         return null;
@@ -288,16 +280,18 @@ public class TestVisibilityLabelsWithACL {
     assertEquals("org.apache.hadoop.hbase.security.AccessDeniedException", response.getResult(1)
         .getException().getName());
 
-    response = VisibilityClient.clearAuths(conf, new String[] { CONFIDENTIAL, PRIVATE }, "user1");
+    response = VisibilityClient.clearAuths(TEST_UTIL.getConnection(), new String[] { CONFIDENTIAL,
+      PRIVATE }, "user1");
     assertTrue(response.getResult(0).getException().getValue().isEmpty());
     assertTrue(response.getResult(1).getException().getValue().isEmpty());
 
-    VisibilityClient.setAuths(conf, new String[] { CONFIDENTIAL, PRIVATE }, "user3");
+    VisibilityClient.setAuths(TEST_UTIL.getConnection(), new String[] { CONFIDENTIAL, PRIVATE },
+      "user3");
     PrivilegedExceptionAction<GetAuthsResponse> action1 = 
         new PrivilegedExceptionAction<GetAuthsResponse>() {
       public GetAuthsResponse run() throws Exception {
-        try {
-          return VisibilityClient.getAuths(conf, "user3");
+        try (Connection conn = ConnectionFactory.createConnection(conf)) {
+          return VisibilityClient.getAuths(conn, "user3");
         } catch (Throwable e) {
         }
         return null;
@@ -315,9 +309,9 @@ public class TestVisibilityLabelsWithACL {
     assertTrue(authsList.contains(PRIVATE));
   }
 
-  private static HTable createTableAndWriteDataWithLabels(TableName tableName, String... labelExps)
+  private static Table createTableAndWriteDataWithLabels(TableName tableName, String... labelExps)
       throws Exception {
-    HTable table = null;
+    Table table = null;
     try {
       table = TEST_UTIL.createTable(tableName, fam);
       int i = 1;
@@ -341,7 +335,7 @@ public class TestVisibilityLabelsWithACL {
   private static void addLabels() throws IOException {
     String[] labels = { SECRET, CONFIDENTIAL, PRIVATE };
     try {
-      VisibilityClient.addLabels(conf, labels);
+      VisibilityClient.addLabels(TEST_UTIL.getConnection(), labels);
     } catch (Throwable t) {
       throw new IOException(t);
     }

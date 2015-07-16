@@ -45,6 +45,8 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.MapReduceTests;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HTable;
@@ -74,7 +76,7 @@ import org.junit.experimental.categories.Category;
 @Category({MapReduceTests.class, LargeTests.class})
 public class TestImportTSVWithVisibilityLabels implements Configurable {
 
-  protected static final Log LOG = LogFactory.getLog(TestImportTSVWithVisibilityLabels.class);
+  private static final Log LOG = LogFactory.getLog(TestImportTSVWithVisibilityLabels.class);
   protected static final String NAME = TestImportTsv.class.getSimpleName();
   protected static HBaseTestingUtility util = new HBaseTestingUtility();
 
@@ -131,8 +133,8 @@ public class TestImportTSVWithVisibilityLabels implements Configurable {
       @Override
       public VisibilityLabelsResponse run() throws Exception {
         String[] labels = { SECRET, TOPSECRET, CONFIDENTIAL, PUBLIC, PRIVATE };
-        try {
-          VisibilityClient.addLabels(conf, labels);
+        try (Connection conn = ConnectionFactory.createConnection(conf)) {
+          VisibilityClient.addLabels(conn, labels);
           LOG.info("Added labels ");
         } catch (Throwable t) {
           LOG.error("Error in adding labels" , t);
@@ -152,16 +154,16 @@ public class TestImportTSVWithVisibilityLabels implements Configurable {
 
   @Test
   public void testMROnTable() throws Exception {
-    String tableName = "test-" + UUID.randomUUID();
+    TableName tableName = TableName.valueOf("test-" + UUID.randomUUID());
 
     // Prepare the arguments required for the test.
     String[] args = new String[] {
         "-D" + ImportTsv.MAPPER_CONF_KEY
             + "=org.apache.hadoop.hbase.mapreduce.TsvImporterMapper",
         "-D" + ImportTsv.COLUMNS_CONF_KEY + "=HBASE_ROW_KEY,FAM:A,FAM:B,HBASE_CELL_VISIBILITY",
-        "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b", tableName };
+        "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b", tableName.getNameAsString() };
     String data = "KEY\u001bVALUE1\u001bVALUE2\u001bsecret&private\n";
-    util.createTable(TableName.valueOf(tableName), FAMILY);
+    util.createTable(tableName, FAMILY);
     doMROnTableTest(util, FAMILY, data, args, 1);
     util.deleteTable(tableName);
   }
@@ -220,25 +222,25 @@ public class TestImportTSVWithVisibilityLabels implements Configurable {
 
   @Test
   public void testMROnTableWithBulkload() throws Exception {
-    String tableName = "test-" + UUID.randomUUID();
-    Path hfiles = new Path(util.getDataTestDirOnTestFS(tableName), "hfiles");
+    TableName tableName = TableName.valueOf("test-" + UUID.randomUUID());
+    Path hfiles = new Path(util.getDataTestDirOnTestFS(tableName.getNameAsString()), "hfiles");
     // Prepare the arguments required for the test.
     String[] args = new String[] {
         "-D" + ImportTsv.BULK_OUTPUT_CONF_KEY + "=" + hfiles.toString(),
         "-D" + ImportTsv.COLUMNS_CONF_KEY
             + "=HBASE_ROW_KEY,FAM:A,FAM:B,HBASE_CELL_VISIBILITY",
-        "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b", tableName };
+        "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b", tableName.getNameAsString() };
     String data = "KEY\u001bVALUE1\u001bVALUE2\u001bsecret&private\n";
-    util.createTable(TableName.valueOf(tableName), FAMILY);
+    util.createTable(tableName, FAMILY);
     doMROnTableTest(util, FAMILY, data, args, 1);
     util.deleteTable(tableName);
   }
 
   @Test
   public void testBulkOutputWithTsvImporterTextMapper() throws Exception {
-    String table = "test-" + UUID.randomUUID();
+    TableName table = TableName.valueOf("test-" + UUID.randomUUID());
     String FAMILY = "FAM";
-    Path bulkOutputPath = new Path(util.getDataTestDirOnTestFS(table),"hfiles");
+    Path bulkOutputPath = new Path(util.getDataTestDirOnTestFS(table.getNameAsString()),"hfiles");
     // Prepare the arguments required for the test.
     String[] args =
         new String[] {
@@ -247,7 +249,8 @@ public class TestImportTSVWithVisibilityLabels implements Configurable {
             "-D" + ImportTsv.COLUMNS_CONF_KEY
                 + "=HBASE_ROW_KEY,FAM:A,FAM:B,HBASE_CELL_VISIBILITY",
             "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b",
-            "-D" + ImportTsv.BULK_OUTPUT_CONF_KEY + "=" + bulkOutputPath.toString(), table
+            "-D" + ImportTsv.BULK_OUTPUT_CONF_KEY + "=" + bulkOutputPath.toString(),
+            table.getNameAsString()
             };
     String data = "KEY\u001bVALUE4\u001bVALUE8\u001bsecret&private\n";
     doMROnTableTest(util, FAMILY, data, args, 4);
@@ -256,17 +259,17 @@ public class TestImportTSVWithVisibilityLabels implements Configurable {
 
   @Test
   public void testMRWithOutputFormat() throws Exception {
-    String tableName = "test-" + UUID.randomUUID();
-    Path hfiles = new Path(util.getDataTestDirOnTestFS(tableName), "hfiles");
+    TableName tableName = TableName.valueOf("test-" + UUID.randomUUID());
+    Path hfiles = new Path(util.getDataTestDirOnTestFS(tableName.getNameAsString()), "hfiles");
     // Prepare the arguments required for the test.
     String[] args = new String[] {
         "-D" + ImportTsv.MAPPER_CONF_KEY
             + "=org.apache.hadoop.hbase.mapreduce.TsvImporterMapper",
         "-D" + ImportTsv.BULK_OUTPUT_CONF_KEY + "=" + hfiles.toString(),
         "-D" + ImportTsv.COLUMNS_CONF_KEY + "=HBASE_ROW_KEY,FAM:A,FAM:B,HBASE_CELL_VISIBILITY",
-        "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b", tableName };
+        "-D" + ImportTsv.SEPARATOR_CONF_KEY + "=\u001b", tableName.getNameAsString() };
     String data = "KEY\u001bVALUE4\u001bVALUE8\u001bsecret&private\n";
-    util.createTable(TableName.valueOf(tableName), FAMILY);
+    util.createTable(tableName, FAMILY);
     doMROnTableTest(util, FAMILY, data, args, 1);
     util.deleteTable(tableName);
   }

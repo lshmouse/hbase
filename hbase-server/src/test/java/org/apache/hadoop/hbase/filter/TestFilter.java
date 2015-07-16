@@ -31,6 +31,7 @@ import java.util.List;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
@@ -47,11 +48,12 @@ import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
 import org.apache.hadoop.hbase.filter.FilterList.Operator;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionScanner;
-import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.testclassification.FilterTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.wal.WAL;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -66,7 +68,7 @@ import com.google.common.base.Throwables;
 @Category({FilterTests.class, SmallTests.class})
 public class TestFilter {
   private final static Log LOG = LogFactory.getLog(TestFilter.class);
-  private HRegion region;
+  private Region region;
   private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
 
   //
@@ -164,7 +166,7 @@ public class TestFilter {
     }
 
     // Flush
-    this.region.flushcache();
+    this.region.flush(true);
 
     // Insert second half (reverse families)
     for(byte [] ROW : ROWS_ONE) {
@@ -241,7 +243,7 @@ public class TestFilter {
       this.region.put(p);
     }
     // Flush
-    this.region.flushcache();
+    this.region.flush(true);
 
     // Insert second half (reverse families)
     for (byte[] ROW : ROWS_THREE) {
@@ -532,7 +534,7 @@ public class TestFilter {
       ArrayList<Cell> values = new ArrayList<Cell>();
       boolean isMoreResults = scanner.next(values);
       if (!isMoreResults
-          || !Bytes.toString(values.get(0).getRow()).startsWith(prefix)) {
+          || !Bytes.toString(CellUtil.cloneRow(values.get(0))).startsWith(prefix)) {
         Assert.assertTrue(
             "The WhileMatchFilter should now filter all remaining",
             filter.filterAllRemaining());
@@ -579,7 +581,7 @@ public class TestFilter {
 
 
   /**
-   * The following filter simulates a pre-0.96 filter where filterRow() is defined while 
+   * The following filter simulates a pre-0.96 filter where filterRow() is defined while
    * hasFilterRow() returns false
    */
   static class OldTestFilter extends FilterBase {
@@ -590,25 +592,25 @@ public class TestFilter {
     public boolean hasFilterRow() {
       return false;
     }
-    
+
     @Override
     public boolean filterRow() {
       // always filter out rows
       return true;
     }
-    
+
     @Override
     public ReturnCode filterKeyValue(Cell ignored) throws IOException {
       return ReturnCode.INCLUDE;
     }
   }
-  
+
   /**
-   * The following test is to ensure old(such as hbase0.94) filterRow() can be correctly fired in 
-   * 0.96+ code base.  
-   * 
+   * The following test is to ensure old(such as hbase0.94) filterRow() can be correctly fired in
+   * 0.96+ code base.
+   *
    * See HBASE-10366
-   * 
+   *
    * @throws Exception
    */
   @Test
@@ -626,7 +628,7 @@ public class TestFilter {
   /**
    * Tests the the {@link WhileMatchFilter} works in combination with a
    * {@link Filter} that uses the
-   * {@link Filter#filterRowKey(byte[], int, int)} method.
+   * {@link Filter#filterRowKey(Cell)} method.
    *
    * See HBASE-2258.
    *
@@ -1450,7 +1452,7 @@ public class TestFilter {
     HTableDescriptor htd = new HTableDescriptor(TableName.valueOf("TestFilter"));
     htd.addFamily(new HColumnDescriptor(family));
     HRegionInfo info = new HRegionInfo(htd.getTableName(), null, null, false);
-    HRegion testRegion = HBaseTestingUtility.createRegionAndWAL(info, TEST_UTIL.getDataTestDir(),
+    Region testRegion = HBaseTestingUtility.createRegionAndWAL(info, TEST_UTIL.getDataTestDir(),
         TEST_UTIL.getConfiguration(), htd);
 
     for(int i=0; i<5; i++) {
@@ -1459,7 +1461,7 @@ public class TestFilter {
       p.add(family, qualifier, Bytes.toBytes(String.valueOf(111+i)));
       testRegion.put(p);
     }
-    testRegion.flushcache();
+    testRegion.flush(true);
 
     // rows starting with "b"
     PrefixFilter pf = new PrefixFilter(new byte[] {'b'}) ;
@@ -1474,7 +1476,7 @@ public class TestFilter {
     InternalScanner scanner = testRegion.getScanner(s1);
     List<Cell> results = new ArrayList<Cell>();
     int resultCount = 0;
-    while(scanner.next(results)) {
+    while (scanner.next(results)) {
       resultCount++;
       byte[] row =  CellUtil.cloneRow(results.get(0));
       LOG.debug("Found row: " + Bytes.toStringBinary(row));
@@ -1485,8 +1487,8 @@ public class TestFilter {
     assertEquals(2, resultCount);
     scanner.close();
 
-    WAL wal = testRegion.getWAL();
-    testRegion.close();
+    WAL wal = ((HRegion)testRegion).getWAL();
+    ((HRegion)testRegion).close();
     wal.close();
   }
 
@@ -1556,7 +1558,7 @@ public class TestFilter {
     };
 
     for(KeyValue kv : srcKVs) {
-      Put put = new Put(kv.getRow()).add(kv);
+      Put put = new Put(CellUtil.cloneRow(kv)).add(kv);
       put.setDurability(Durability.SKIP_WAL);
       this.region.put(put);
     }
@@ -1595,7 +1597,7 @@ public class TestFilter {
 
     // Add QUALIFIERS_ONE[1] to ROWS_THREE[0] with VALUES[0]
     KeyValue kvA = new KeyValue(ROWS_THREE[0], FAMILIES[0], QUALIFIERS_ONE[1], VALUES[0]);
-    this.region.put(new Put(kvA.getRow()).add(kvA));
+    this.region.put(new Put(CellUtil.cloneRow(kvA)).add(kvA));
 
     // Match VALUES[1] against QUALIFIERS_ONE[1] with filterIfMissing = true
     // Expect 1 row (3)
@@ -1618,7 +1620,7 @@ public class TestFilter {
     for (boolean done = true; done; i++) {
       done = scanner.next(results);
       Arrays.sort(results.toArray(new KeyValue[results.size()]),
-          KeyValue.COMPARATOR);
+          CellComparator.COMPARATOR);
       LOG.info("counter=" + i + ", " + results);
       if (results.isEmpty()) break;
       assertTrue("Scanned too many rows! Only expected " + expectedRows +
@@ -1640,7 +1642,7 @@ public class TestFilter {
     for (boolean done = true; done; i++) {
       done = scanner.next(results);
       Arrays.sort(results.toArray(new KeyValue[results.size()]),
-          KeyValue.COMPARATOR);
+          CellComparator.COMPARATOR);
       LOG.info("counter=" + i + ", " + results);
       if(results.isEmpty()) break;
       assertTrue("Scanned too many rows! Only expected " + expectedRows +
@@ -1662,7 +1664,7 @@ public class TestFilter {
     for (boolean done = true; done; row++) {
       done = scanner.next(results);
       Arrays.sort(results.toArray(new KeyValue[results.size()]),
-          KeyValue.COMPARATOR);
+          CellComparator.COMPARATOR);
       if(results.isEmpty()) break;
       assertTrue("Scanned too many keys! Only expected " + kvs.length +
           " total but already scanned " + (results.size() + idx) +
@@ -1693,7 +1695,7 @@ public class TestFilter {
     for (boolean more = true; more; row++) {
       more = scanner.next(results);
       Arrays.sort(results.toArray(new KeyValue[results.size()]),
-          KeyValue.COMPARATOR);
+          CellComparator.COMPARATOR);
       if(results.isEmpty()) break;
       assertTrue("Scanned too many keys! Only expected " + kvs.length +
           " total but already scanned " + (results.size() + idx) +
@@ -1819,7 +1821,7 @@ public class TestFilter {
       p.setDurability(Durability.SKIP_WAL);
       p.add(FAMILIES[0], QUALIFIERS_ONE[0], VALUES[0]);
       this.region.put(p);
-      this.region.flushcache();
+      this.region.flush(true);
 
       // Set of KVs (page: 1; pageSize: 1) - the first set of 1 column per row
       KeyValue [] expectedKVs = {
@@ -1969,7 +1971,7 @@ public class TestFilter {
       verifyScanFullNoValues(s, expectedKVs, useLen);
     }
   }
-  
+
   /**
    * Filter which makes sleeps for a second between each row of a scan.
    * This can be useful for manual testing of bugs like HBASE-5973. For example:
@@ -1982,7 +1984,7 @@ public class TestFilter {
    */
   public static class SlowScanFilter extends FilterBase {
     private static Thread ipcHandlerThread = null;
-    
+
     @Override
     public byte [] toByteArray() {return null;}
 
@@ -2010,7 +2012,7 @@ public class TestFilter {
     HTableDescriptor htd = new HTableDescriptor(TableName.valueOf("testNestedFilterListWithSCVF"));
     htd.addFamily(new HColumnDescriptor(FAMILIES[0]));
     HRegionInfo info = new HRegionInfo(htd.getTableName(), null, null, false);
-    HRegion testRegion = HBaseTestingUtility.createRegionAndWAL(info, TEST_UTIL.getDataTestDir(),
+    Region testRegion = HBaseTestingUtility.createRegionAndWAL(info, TEST_UTIL.getDataTestDir(),
         TEST_UTIL.getConfiguration(), htd);
     for(int i=0; i<10; i++) {
       Put p = new Put(Bytes.toBytes("row" + i));
@@ -2018,7 +2020,7 @@ public class TestFilter {
       p.add(FAMILIES[0], columnStatus, Bytes.toBytes(i%2));
       testRegion.put(p);
     }
-    testRegion.flushcache();
+    testRegion.flush(true);
     // 1. got rows > "row4"
     Filter rowFilter = new RowFilter(CompareOp.GREATER,new BinaryComparator(Bytes.toBytes("row4")));
     Scan s1 = new Scan();
@@ -2094,8 +2096,8 @@ public class TestFilter {
       results.clear();
     }
     assertFalse(scanner.next(results));
-    WAL wal = testRegion.getWAL();
-    testRegion.close();
+    WAL wal = ((HRegion)testRegion).getWAL();
+    ((HRegion)testRegion).close();
     wal.close();
-  }      
+  }
 }

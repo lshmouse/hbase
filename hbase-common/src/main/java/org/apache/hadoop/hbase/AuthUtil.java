@@ -28,17 +28,19 @@ import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.util.Strings;
-import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.net.DNS;
 import org.apache.hadoop.security.UserGroupInformation;
 
 /**
  * Utility methods for helping with security tasks.
  */
-@InterfaceAudience.Public
+@InterfaceAudience.Private
 @InterfaceStability.Evolving
 public class AuthUtil {
   private static final Log LOG = LogFactory.getLog(AuthUtil.class);
+
+  /** Prefix character to denote group names */
+  public static final String GROUP_PREFIX = "@";
 
   private AuthUtil() {
     super();
@@ -47,12 +49,12 @@ public class AuthUtil {
   /**
    * Checks if security is enabled and if so, launches chore for refreshing kerberos ticket.
    */
-  public static void launchAuthChore(Configuration conf) throws IOException {
+  public static ScheduledChore getAuthChore(Configuration conf) throws IOException {
     UserProvider userProvider = UserProvider.instantiate(conf);
     // login the principal (if using secure Hadoop)
     boolean securityEnabled =
         userProvider.isHadoopSecurityEnabled() && userProvider.isHBaseSecurityEnabled();
-    if (!securityEnabled) return;
+    if (!securityEnabled) return null;
     String host = null;
     try {
       host = Strings.domainNamePointerToHostName(DNS.getDefaultHost(
@@ -60,10 +62,10 @@ public class AuthUtil {
           conf.get("hbase.client.dns.nameserver", "default")));
       userProvider.login("hbase.client.keytab.file", "hbase.client.kerberos.principal", host);
     } catch (UnknownHostException e) {
-      LOG.error("Error resolving host name");
+      LOG.error("Error resolving host name: " + e.getMessage(), e);
       throw e;
     } catch (IOException e) {
-      LOG.error("Error while trying to perform the initial login");
+      LOG.error("Error while trying to perform the initial login: " + e.getMessage(), e);
       throw e;
     }
 
@@ -87,17 +89,46 @@ public class AuthUtil {
     // e.g. 5min tgt * 0.8 = 4min refresh so interval is better be way less than 1min
     final int CHECK_TGT_INTERVAL = 30 * 1000; // 30sec
 
-    Chore refreshCredentials = new Chore("RefreshCredentials", CHECK_TGT_INTERVAL, stoppable) {
+    ScheduledChore refreshCredentials =
+        new ScheduledChore("RefreshCredentials", stoppable, CHECK_TGT_INTERVAL) {
       @Override
       protected void chore() {
         try {
           ugi.checkTGTAndReloginFromKeytab();
         } catch (IOException e) {
-          LOG.info("Got exception while trying to refresh credentials ");
+          LOG.error("Got exception while trying to refresh credentials: " + e.getMessage(), e);
         }
       }
     };
-    // Start the chore for refreshing credentials
-    Threads.setDaemonThreadRunning(refreshCredentials.getThread());
+
+    return refreshCredentials;
+  }
+
+  /**
+   * Returns whether or not the given name should be interpreted as a group
+   * principal.  Currently this simply checks if the name starts with the
+   * special group prefix character ("@").
+   */
+  public static boolean isGroupPrincipal(String name) {
+    return name != null && name.startsWith(GROUP_PREFIX);
+  }
+
+  /**
+   * Returns the actual name for a group principal (stripped of the
+   * group prefix).
+   */
+  public static String getGroupName(String aclKey) {
+    if (!isGroupPrincipal(aclKey)) {
+      return aclKey;
+    }
+
+    return aclKey.substring(GROUP_PREFIX.length());
+  }
+
+  /**
+   * Returns the group entry with the group prefix for a group principal.
+   */
+  public static String toGroupEntry(String name) {
+    return GROUP_PREFIX + name;
   }
 }

@@ -301,6 +301,7 @@ Shell.load_command_group(
     truncate
     truncate_preserve
     append
+    get_splits
   ]
 )
 
@@ -312,6 +313,7 @@ Shell.load_command_group(
     assign
     balancer
     balance_switch
+    balancer_enabled
     close_region
     compact
     flush
@@ -349,6 +351,8 @@ Shell.load_command_group(
     list_replicated_tables
     append_peer_tableCFs
     remove_peer_tableCFs
+    enable_table_replication
+    disable_table_replication
   ]
 )
 
@@ -361,7 +365,9 @@ Shell.load_command_group(
     restore_snapshot
     delete_snapshot
     delete_all_snapshot
+    delete_table_snapshots
     list_snapshots
+    list_table_snapshots
   ]
 )
 

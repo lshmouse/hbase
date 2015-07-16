@@ -23,6 +23,7 @@ import java.io.IOException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.DroppedSnapshotException;
 import org.apache.hadoop.hbase.master.TableLockManager.TableLock;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.ipc.RemoteException;
@@ -35,19 +36,22 @@ import com.google.common.base.Preconditions;
  */
 @InterfaceAudience.Private
 class RegionMergeRequest implements Runnable {
-  static final Log LOG = LogFactory.getLog(RegionMergeRequest.class);
+  private static final Log LOG = LogFactory.getLog(RegionMergeRequest.class);
   private final HRegion region_a;
   private final HRegion region_b;
   private final HRegionServer server;
   private final boolean forcible;
   private TableLock tableLock;
+  private final long masterSystemTime;
 
-  RegionMergeRequest(HRegion a, HRegion b, HRegionServer hrs, boolean forcible) {
+  RegionMergeRequest(Region a, Region b, HRegionServer hrs, boolean forcible,
+    long masterSystemTime) {
     Preconditions.checkNotNull(hrs);
-    this.region_a = a;
-    this.region_b = b;
+    this.region_a = (HRegion)a;
+    this.region_b = (HRegion)b;
     this.server = hrs;
     this.forcible = forcible;
+    this.masterSystemTime = masterSystemTime;
   }
 
   @Override
@@ -65,13 +69,14 @@ class RegionMergeRequest implements Runnable {
     }
     try {
       final long startTime = EnvironmentEdgeManager.currentTime();
-      RegionMergeTransaction mt = new RegionMergeTransaction(region_a,
-          region_b, forcible);
+      RegionMergeTransactionImpl mt = new RegionMergeTransactionImpl(region_a,
+          region_b, forcible, masterSystemTime);
 
       //acquire a shared read lock on the table, so that table schema modifications
       //do not happen concurrently
       tableLock = server.getTableLockManager().readLock(region_a.getTableDesc().getTableName()
-          , "MERGE_REGIONS:" + region_a.getRegionNameAsString() + ", " + region_b.getRegionNameAsString());
+          , "MERGE_REGIONS:" + region_a.getRegionInfo().getRegionNameAsString() + ", " +
+              region_b.getRegionInfo().getRegionNameAsString());
       try {
         tableLock.acquire();
       } catch (IOException ex) {
@@ -90,6 +95,10 @@ class RegionMergeRequest implements Runnable {
               "Skip rollback/cleanup of failed merge of " + region_a + " and "
                   + region_b + " because server is"
                   + (this.server.isStopping() ? " stopping" : " stopped"), e);
+          return;
+        }
+        if (e instanceof DroppedSnapshotException) {
+          server.abort("Replay of WAL required. Forcing server shutdown", e);
           return;
         }
         try {
@@ -134,7 +143,7 @@ class RegionMergeRequest implements Runnable {
         LOG.error("Could not release the table lock (something is really wrong). " 
            + "Aborting this server to avoid holding the lock forever.");
         this.server.abort("Abort; we got an error when releasing the table lock "
-                         + "on " + region_a.getRegionNameAsString());
+                         + "on " + region_a.getRegionInfo().getRegionNameAsString());
       }
     }
   }

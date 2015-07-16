@@ -24,31 +24,32 @@ import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configurable;
+import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
 import org.apache.hadoop.hbase.testclassification.IntegrationTests;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValue.Type;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.mapreduce.lib.partition.TotalOrderPartitioner;
-import org.apache.hadoop.util.GenericOptionsParser;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 import org.junit.AfterClass;
@@ -60,10 +61,10 @@ import org.junit.experimental.categories.Category;
  * Validate ImportTsv + LoadIncrementalHFiles on a distributed cluster.
  */
 @Category(IntegrationTests.class)
-public class IntegrationTestImportTsv implements Configurable, Tool {
+public class IntegrationTestImportTsv extends Configured implements Tool {
 
   private static final String NAME = IntegrationTestImportTsv.class.getSimpleName();
-  protected static final Log LOG = LogFactory.getLog(IntegrationTestImportTsv.class);
+  private static final Log LOG = LogFactory.getLog(IntegrationTestImportTsv.class);
 
   protected static final String simple_tsv =
       "row1\t1\tc1\tc2\n" +
@@ -78,7 +79,7 @@ public class IntegrationTestImportTsv implements Configurable, Tool {
       "row10\t1\tc1\tc2\n";
 
   protected static final Set<KeyValue> simple_expected =
-      new TreeSet<KeyValue>(KeyValue.COMPARATOR) {
+      new TreeSet<KeyValue>(CellComparator.COMPARATOR) {
     private static final long serialVersionUID = 1L;
     {
       byte[] family = Bytes.toBytes("d");
@@ -102,7 +103,7 @@ public class IntegrationTestImportTsv implements Configurable, Tool {
   }
 
   public void setConf(Configuration conf) {
-    throw new IllegalArgumentException("setConf not supported");
+    LOG.debug("Ignoring setConf call.");
   }
 
   @BeforeClass
@@ -157,7 +158,7 @@ public class IntegrationTestImportTsv implements Configurable, Tool {
           assertTrue(
             format("Scan produced surprising result. expected: <%s>, actual: %s",
               expected, actual),
-            KeyValue.COMPARATOR.compare(expected, actual) == 0);
+            CellComparator.COMPARATOR.compare(expected, actual) == 0);
         }
       }
       assertFalse("Did not consume all expected values.", expectedIt.hasNext());
@@ -187,19 +188,18 @@ public class IntegrationTestImportTsv implements Configurable, Tool {
     Path hfiles = new Path(
         util.getDataTestDirOnTestFS(table.getNameAsString()), "hfiles");
 
-    String[] args = {
-        format("-D%s=%s", ImportTsv.BULK_OUTPUT_CONF_KEY, hfiles),
-        format("-D%s=HBASE_ROW_KEY,HBASE_TS_KEY,%s:c1,%s:c2",
-          ImportTsv.COLUMNS_CONF_KEY, cf, cf),
-        // configure the test harness to NOT delete the HFiles after they're
-        // generated. We need those for doLoadIncrementalHFiles
-        format("-D%s=false", TestImportTsv.DELETE_AFTER_LOAD_CONF),
-        table.getNameAsString()
-    };
+
+    Map<String, String> args = new HashMap<String, String>();
+    args.put(ImportTsv.BULK_OUTPUT_CONF_KEY, hfiles.toString());
+    args.put(ImportTsv.COLUMNS_CONF_KEY,
+        format("HBASE_ROW_KEY,HBASE_TS_KEY,%s:c1,%s:c2", cf, cf));
+    // configure the test harness to NOT delete the HFiles after they're
+    // generated. We need those for doLoadIncrementalHFiles
+    args.put(TestImportTsv.DELETE_AFTER_LOAD_CONF, "false");
 
     // run the job, complete the load.
     util.createTable(table, new String[]{cf});
-    Tool t = TestImportTsv.doMROnTableTest(util, cf, simple_tsv, args);
+    Tool t = TestImportTsv.doMROnTableTest(util, table.getNameAsString(), cf, simple_tsv, args);
     doLoadIncrementalHFiles(hfiles, table);
 
     // validate post-conditions
@@ -216,7 +216,7 @@ public class IntegrationTestImportTsv implements Configurable, Tool {
       System.err.println(format("%s [genericOptions]", NAME));
       System.err.println("  Runs ImportTsv integration tests against a distributed cluster.");
       System.err.println();
-      GenericOptionsParser.printGenericCommandUsage(System.err);
+      ToolRunner.printGenericCommandUsage(System.err);
       return 1;
     }
 
@@ -233,9 +233,7 @@ public class IntegrationTestImportTsv implements Configurable, Tool {
     Configuration conf = HBaseConfiguration.create();
     IntegrationTestingUtility.setUseDistributedCluster(conf);
     util = new IntegrationTestingUtility(conf);
-    // not using ToolRunner to avoid unnecessary call to setConf()
-    args = new GenericOptionsParser(conf, args).getRemainingArgs();
-    int status = new IntegrationTestImportTsv().run(args);
+    int status = ToolRunner.run(conf, new IntegrationTestImportTsv(), args);
     System.exit(status);
   }
 }

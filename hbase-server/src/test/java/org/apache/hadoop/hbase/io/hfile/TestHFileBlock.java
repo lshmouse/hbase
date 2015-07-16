@@ -47,6 +47,8 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
@@ -130,7 +132,7 @@ public class TestHFileBlock {
 
       // generate it or repeat, it should compress well
       if (0 < i && randomizer.nextFloat() < CHANCE_TO_REPEAT) {
-        row = keyValues.get(randomizer.nextInt(keyValues.size())).getRow();
+        row = CellUtil.cloneRow(keyValues.get(randomizer.nextInt(keyValues.size())));
       } else {
         row = new byte[FIELD_LENGTH];
         randomizer.nextBytes(row);
@@ -139,17 +141,16 @@ public class TestHFileBlock {
         family = new byte[FIELD_LENGTH];
         randomizer.nextBytes(family);
       } else {
-        family = keyValues.get(0).getFamily();
+        family = CellUtil.cloneFamily(keyValues.get(0));
       }
       if (0 < i && randomizer.nextFloat() < CHANCE_TO_REPEAT) {
-        qualifier = keyValues.get(
-            randomizer.nextInt(keyValues.size())).getQualifier();
+        qualifier = CellUtil.cloneQualifier(keyValues.get(randomizer.nextInt(keyValues.size())));
       } else {
         qualifier = new byte[FIELD_LENGTH];
         randomizer.nextBytes(qualifier);
       }
       if (0 < i && randomizer.nextFloat() < CHANCE_TO_REPEAT) {
-        value = keyValues.get(randomizer.nextInt(keyValues.size())).getValue();
+        value = CellUtil.cloneValue(keyValues.get(randomizer.nextInt(keyValues.size())));
       } else {
         value = new byte[FIELD_LENGTH];
         randomizer.nextBytes(value);
@@ -170,7 +171,7 @@ public class TestHFileBlock {
 
     // sort it and write to stream
     int totalSize = 0;
-    Collections.sort(keyValues, KeyValue.COMPARATOR);
+    Collections.sort(keyValues, CellComparator.COMPARATOR);
 
     for (KeyValue kv : keyValues) {
       totalSize += kv.getLength();
@@ -249,7 +250,8 @@ public class TestHFileBlock {
     final String correctTestBlockStr =
         "DATABLK*\\x00\\x00\\x00>\\x00\\x00\\x0F\\xA0\\xFF\\xFF\\xFF\\xFF"
             + "\\xFF\\xFF\\xFF\\xFF"
-            + "\\x01\\x00\\x00@\\x00\\x00\\x00\\x00["
+            + "\\x0" + ChecksumType.getDefaultChecksumType().getCode()
+            + "\\x00\\x00@\\x00\\x00\\x00\\x00["
             // gzip-compressed block: http://www.gzip.org/zlib/rfc-gzip.html
             + "\\x1F\\x8B"  // gzip magic signature
             + "\\x08"  // Compression method: 8 = "deflate"
@@ -835,7 +837,7 @@ public class TestHFileBlock {
                           .withBytesPerCheckSum(HFile.DEFAULT_BYTES_PER_CHECKSUM)
                           .withChecksumType(ChecksumType.NULL).build();
       HFileBlock block = new HFileBlock(BlockType.DATA, size, size, -1, buf,
-          HFileBlock.FILL_HEADER, -1, 
+          HFileBlock.FILL_HEADER, -1,
           0, meta);
       long byteBufferExpectedSize =
           ClassSize.align(ClassSize.estimateBase(buf.getClass(), true)

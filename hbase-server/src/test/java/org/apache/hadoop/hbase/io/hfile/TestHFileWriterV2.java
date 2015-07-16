@@ -38,9 +38,10 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.KeyValue.KVComparator;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.compress.Compression.Algorithm;
 import org.apache.hadoop.hbase.io.hfile.HFile.FileInfo;
@@ -56,7 +57,7 @@ import org.junit.experimental.categories.Category;
 
 /**
  * Testing writing a version 2 {@link HFile}. This is a low-level test written
- * during the development of {@link HFileWriterV2}.
+ * during the development of {@link HFileWriterImpl}.
  */
 @Category({IOTests.class, SmallTests.class})
 public class TestHFileWriterV2 {
@@ -99,8 +100,7 @@ public class TestHFileWriterV2 {
                            .withBlockSize(4096)
                            .withCompression(compressAlgo)
                            .build();
-    HFileWriterV2 writer = (HFileWriterV2)
-        new HFileWriterV2.WriterFactoryV2(conf, new CacheConfig(conf))
+    HFile.Writer writer = new HFileWriterFactory(conf, new CacheConfig(conf))
             .withPath(fs, hfilePath)
             .withFileContext(context)
             .create();
@@ -125,7 +125,7 @@ public class TestHFileWriterV2 {
     writer.appendMetaBlock("CAPITAL_OF_FRANCE", new Text("Paris"));
 
     writer.close();
-    
+
 
     FSDataInputStream fsdis = fs.open(hfilePath);
 
@@ -136,7 +136,6 @@ public class TestHFileWriterV2 {
     FixedFileTrailer trailer =
         FixedFileTrailer.readFromStream(fsdis, fileSize);
 
-    assertEquals(2, trailer.getMajorVersion());
     assertEquals(entryCount, trailer.getEntryCount());
 
     HFileContext meta = new HFileContextBuilder()
@@ -145,16 +144,15 @@ public class TestHFileWriterV2 {
                         .withIncludesTags(false)
                         .withCompression(compressAlgo)
                         .build();
-    
+
     HFileBlock.FSReader blockReader = new HFileBlock.FSReaderImpl(fsdis, fileSize, meta);
     // Comparator class name is stored in the trailer in version 2.
-    KVComparator comparator = trailer.createComparator();
+    CellComparator comparator = trailer.createComparator();
     HFileBlockIndex.BlockIndexReader dataBlockIndexReader =
-        new HFileBlockIndex.BlockIndexReader(comparator,
+        new HFileBlockIndex.CellBasedKeyBlockIndexReader(comparator,
             trailer.getNumDataIndexLevels());
     HFileBlockIndex.BlockIndexReader metaBlockIndexReader =
-        new HFileBlockIndex.BlockIndexReader(
-            KeyValue.RAW_COMPARATOR, 1);
+        new HFileBlockIndex.ByteArrayKeyBlockIndexReader(1);
 
     HFileBlock.BlockIterator blockIter = blockReader.blockRange(
         trailer.getLoadOnOpenDataOffset(),
@@ -164,12 +162,12 @@ public class TestHFileWriterV2 {
     dataBlockIndexReader.readMultiLevelIndexRoot(
         blockIter.nextBlockWithBlockType(BlockType.ROOT_INDEX),
         trailer.getDataIndexCount());
-    
+
     if (findMidKey) {
-      byte[] midkey = dataBlockIndexReader.midkey();
+      Cell midkey = dataBlockIndexReader.midkey();
       assertNotNull("Midkey should not be null", midkey);
     }
-    
+
     // Meta index.
     metaBlockIndexReader.readRootIndex(
         blockIter.nextBlockWithBlockType(BlockType.ROOT_INDEX)
@@ -177,8 +175,7 @@ public class TestHFileWriterV2 {
     // File info
     FileInfo fileInfo = new FileInfo();
     fileInfo.read(blockIter.nextBlockWithBlockType(BlockType.FILE_INFO).getByteStream());
-    byte [] keyValueFormatVersion = fileInfo.get(
-        HFileWriterV2.KEY_VALUE_VERSION);
+    byte [] keyValueFormatVersion = fileInfo.get(HFileWriterImpl.KEY_VALUE_VERSION);
     boolean includeMemstoreTS = keyValueFormatVersion != null &&
         Bytes.toInt(keyValueFormatVersion) > 0;
 
@@ -218,8 +215,10 @@ public class TestHFileWriterV2 {
         }
 
         // A brute-force check to see that all keys and values are correct.
-        assertTrue(Bytes.compareTo(key, keyValues.get(entriesRead).getKey()) == 0);
-        assertTrue(Bytes.compareTo(value, keyValues.get(entriesRead).getValue()) == 0);
+        KeyValue kv = keyValues.get(entriesRead);
+        assertTrue(Bytes.compareTo(key, kv.getKey()) == 0);
+        assertTrue(Bytes.compareTo(value, 0, value.length, kv.getValueArray(), kv.getValueOffset(),
+          kv.getValueLength()) == 0);
 
         ++entriesRead;
       }

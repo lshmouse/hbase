@@ -21,9 +21,8 @@ package org.apache.hadoop.hbase.codec.prefixtree;
 import java.nio.ByteBuffer;
 
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.KeyValue.KVComparator;
 import org.apache.hadoop.hbase.KeyValue.Type;
 import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.SettableSequenceId;
@@ -63,8 +62,9 @@ public class PrefixTreeSeeker implements EncodedSeeker {
   }
 
   /**
+   * <p>
    * Currently unused.
-   * <p/>
+   * </p>
    * TODO performance leak. should reuse the searchers. hbase does not currently have a hook where
    * this can be called
    */
@@ -74,8 +74,8 @@ public class PrefixTreeSeeker implements EncodedSeeker {
 
 
   @Override
-  public ByteBuffer getKeyDeepCopy() {
-    return KeyValueUtil.copyKeyToNewByteBuffer(ptSearcher.current());
+  public Cell getKey() {
+    return ptSearcher.current();
   }
 
 
@@ -110,12 +110,13 @@ public class PrefixTreeSeeker implements EncodedSeeker {
   }
 
   /**
+   * <p>
    * Currently unused.
-   * <p/>
+   * </p><p>
    * A nice, lightweight reference, though the underlying cell is transient. This method may return
    * the same reference to the backing PrefixTreeCell repeatedly, while other implementations may
    * return a different reference for each Cell.
-   * <p/>
+   * </p>
    * The goal will be to transition the upper layers of HBase, like Filters and KeyValueHeap, to
    * use this method instead of the getKeyValue() methods above.
    */
@@ -140,48 +141,6 @@ public class PrefixTreeSeeker implements EncodedSeeker {
 
   private static final boolean USE_POSITION_BEFORE = false;
 
-  /**
-   * Seek forward only (should be called reseekToKeyInBlock?).
-   * <p/>
-   * If the exact key is found look at the seekBefore variable and:<br/>
-   * - if true: go to the previous key if it's true<br/>
-   * - if false: stay on the exact key
-   * <p/>
-   * If the exact key is not found, then go to the previous key *if possible*, but remember to
-   * leave the scanner in a valid state if possible.
-   * <p/>
-   * @param keyOnlyBytes KeyValue format of a Cell's key at which to position the seeker
-   * @param offset offset into the keyOnlyBytes array
-   * @param length number of bytes of the keyOnlyBytes array to use
-   * @param forceBeforeOnExactMatch if an exact match is found and seekBefore=true, back up 1 Cell
-   * @return 0 if the seeker is on the exact key<br/>
-   *         1 if the seeker is not on the key for any reason, including seekBefore being true
-   */
-  @Override
-  public int seekToKeyInBlock(byte[] keyOnlyBytes, int offset, int length,
-      boolean forceBeforeOnExactMatch) {
-    if (USE_POSITION_BEFORE) {
-      return seekToOrBeforeUsingPositionAtOrBefore(keyOnlyBytes, offset, length,
-          forceBeforeOnExactMatch);
-    } else {
-      return seekToOrBeforeUsingPositionAtOrAfter(keyOnlyBytes, offset, length,
-          forceBeforeOnExactMatch);
-    }
-  }
-
-  /*
-   * Support both of these options since the underlying PrefixTree supports both.  Possibly
-   * expand the EncodedSeeker to utilize them both.
-   */
-
-  protected int seekToOrBeforeUsingPositionAtOrBefore(byte[] keyOnlyBytes, int offset, int length,
-      boolean seekBefore){
-    // this does a deep copy of the key byte[] because the CellSearcher interface wants a Cell
-    KeyValue kv = new KeyValue.KeyOnlyKeyValue(keyOnlyBytes, offset, length);
-
-    return seekToOrBeforeUsingPositionAtOrBefore(kv, seekBefore);
-  }
-
   /*
    * Support both of these options since the underlying PrefixTree supports
    * both. Possibly expand the EncodedSeeker to utilize them both.
@@ -201,14 +160,6 @@ public class PrefixTreeSeeker implements EncodedSeeker {
     }
 
     return 1;
-  }
-
-  protected int seekToOrBeforeUsingPositionAtOrAfter(byte[] keyOnlyBytes, int offset, int length,
-      boolean seekBefore) {
-    // this does a deep copy of the key byte[] because the CellSearcher
-    // interface wants a Cell
-    KeyValue kv = new KeyValue.KeyOnlyKeyValue(keyOnlyBytes, offset, length);
-    return seekToOrBeforeUsingPositionAtOrAfter(kv, seekBefore);
   }
 
   protected int seekToOrBeforeUsingPositionAtOrAfter(Cell kv, boolean seekBefore) {
@@ -242,13 +193,6 @@ public class PrefixTreeSeeker implements EncodedSeeker {
   }
 
   @Override
-  public int compareKey(KVComparator comparator, byte[] key, int offset, int length) {
-    // can't optimize this, make a copy of the key
-    ByteBuffer bb = getKeyDeepCopy();
-    return comparator.compareFlatKey(key, offset, length, bb.array(), bb.arrayOffset(), bb.limit());
-  }
-
-  @Override
   public int seekToKeyInBlock(Cell key, boolean forceBeforeOnExactMatch) {
     if (USE_POSITION_BEFORE) {
       return seekToOrBeforeUsingPositionAtOrBefore(key, forceBeforeOnExactMatch);
@@ -258,10 +202,9 @@ public class PrefixTreeSeeker implements EncodedSeeker {
   }
 
   @Override
-  public int compareKey(KVComparator comparator, Cell key) {
-    ByteBuffer bb = getKeyDeepCopy();
+  public int compareKey(CellComparator comparator, Cell key) {
     return comparator.compare(key,
-        new KeyValue.KeyOnlyKeyValue(bb.array(), bb.arrayOffset(), bb.limit()));
+        ptSearcher.current());
   }
   /**
    * Cloned version of the PrefixTreeCell where except the value part, the rest
@@ -372,12 +315,6 @@ public class PrefixTreeSeeker implements EncodedSeeker {
     }
 
     @Override
-    @Deprecated
-    public long getMvccVersion() {
-      return getSequenceId();
-    }
-
-    @Override
     public long getSequenceId() {
       return seqId;
     }
@@ -410,30 +347,6 @@ public class PrefixTreeSeeker implements EncodedSeeker {
     @Override
     public int getTagsLength() {
       return this.tagsLength;
-    }
-
-    @Override
-    @Deprecated
-    public byte[] getValue() {
-      return this.val;
-    }
-
-    @Override
-    @Deprecated
-    public byte[] getFamily() {
-      return this.fam;
-    }
-
-    @Override
-    @Deprecated
-    public byte[] getQualifier() {
-      return this.qual;
-    }
-
-    @Override
-    @Deprecated
-    public byte[] getRow() {
-      return this.row;
     }
 
     @Override

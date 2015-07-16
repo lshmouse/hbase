@@ -25,21 +25,19 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MetaTableAccessor;
-import org.apache.hadoop.hbase.NotServingRegionException;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.ZooKeeperConnectionException;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.HConnection;
-import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.master.RegionState;
-import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.AdminService;
+import org.apache.hadoop.hbase.master.ServerManager;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.zookeeper.KeeperException;
 
@@ -55,7 +53,7 @@ import java.util.Random;
  */
 @InterfaceAudience.Private
 public class HBaseFsckRepair {
-  public static final Log LOG = LogFactory.getLog(HBaseFsckRepair.class);
+  private static final Log LOG = LogFactory.getLog(HBaseFsckRepair.class);
 
   /**
    * Fix multiple assignment by doing silent closes on each RS hosting the region
@@ -123,8 +121,8 @@ public class HBaseFsckRepair {
   public static void waitUntilAssigned(Admin admin,
       HRegionInfo region) throws IOException, InterruptedException {
     long timeout = admin.getConfiguration().getLong("hbase.hbck.assign.timeout", 120000);
-    long expiration = timeout + System.currentTimeMillis();
-    while (System.currentTimeMillis() < expiration) {
+    long expiration = timeout + EnvironmentEdgeManager.currentTime();
+    while (EnvironmentEdgeManager.currentTime() < expiration) {
       try {
         Map<String, RegionState> rits=
             admin.getClusterStatus().getRegionsInTransition();
@@ -151,31 +149,12 @@ public class HBaseFsckRepair {
    * (default 120s) to close the region.  This bypasses the active hmaster.
    */
   @SuppressWarnings("deprecation")
-  public static void closeRegionSilentlyAndWait(HConnection connection, 
+  public static void closeRegionSilentlyAndWait(HConnection connection,
       ServerName server, HRegionInfo region) throws IOException, InterruptedException {
-    AdminService.BlockingInterface rs = connection.getAdmin(server);
-    try {
-      ProtobufUtil.closeRegion(rs, server, region.getRegionName());
-    } catch (IOException e) {
-      LOG.warn("Exception when closing region: " + region.getRegionNameAsString(), e);
-    }
     long timeout = connection.getConfiguration()
       .getLong("hbase.hbck.close.timeout", 120000);
-    long expiration = timeout + System.currentTimeMillis();
-    while (System.currentTimeMillis() < expiration) {
-      try {
-        HRegionInfo rsRegion =
-          ProtobufUtil.getRegionInfo(rs, region.getRegionName());
-        if (rsRegion == null) return;
-      } catch (IOException ioe) {
-        if (ioe instanceof NotServingRegionException) // no need to retry again
-          return;
-        LOG.warn("Exception when retrieving regioninfo from: " + region.getRegionNameAsString(), ioe);
-      }
-      Thread.sleep(1000);
-    }
-    throw new IOException("Region " + region + " failed to close within"
-        + " timeout " + timeout);
+    ServerManager.closeRegionSilentlyAndWait((ClusterConnection)connection, server,
+         region, timeout);
   }
 
   /**
@@ -195,7 +174,7 @@ public class HBaseFsckRepair {
         // see the additional replicas when it is asked to assign. The
         // final value of these columns will be different and will be updated
         // by the actual regionservers that start hosting the respective replicas
-        MetaTableAccessor.addLocation(put, sn, sn.getStartcode(), i);
+        MetaTableAccessor.addLocation(put, sn, sn.getStartcode(), -1, i);
       }
     }
     meta.put(put);

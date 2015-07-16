@@ -71,7 +71,7 @@ public class HBaseConfiguration extends Configuration {
     String thisVersion = VersionInfo.getVersion();
     if (!thisVersion.equals(defaultsVersion)) {
       throw new RuntimeException(
-        "hbase-default.xml file seems to be for and old version of HBase (" +
+        "hbase-default.xml file seems to be for an older version of HBase (" +
         defaultsVersion + "), this version is " + thisVersion);
     }
   }
@@ -91,6 +91,10 @@ public class HBaseConfiguration extends Configuration {
    */
   public static Configuration create() {
     Configuration conf = new Configuration();
+    // In case HBaseConfiguration is loaded from a different classloader than
+    // Configuration, conf needs to be set with appropriate class loader to resolve
+    // HBase resources.
+    conf.setClassLoader(HBaseConfiguration.class.getClassLoader());
     return addHbaseResources(conf);
   }
 

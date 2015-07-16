@@ -86,9 +86,12 @@ public class SplitLogCounters {
   public final static AtomicLong tot_wkr_task_grabing = new AtomicLong(0);
 
   public static void resetCounters() throws Exception {
-    Class<?> cl = (new SplitLogCounters()).getClass();
+    Class<?> cl = SplitLogCounters.class;
     for (Field fld : cl.getDeclaredFields()) {
-      if (!fld.isSynthetic()) ((AtomicLong)fld.get(null)).set(0);
+      /* Guard against source instrumentation. */
+      if ((!fld.isSynthetic()) && (AtomicLong.class.isAssignableFrom(fld.getType()))) {
+        ((AtomicLong)fld.get(null)).set(0);
+      }
     }
   }
 }

@@ -66,17 +66,17 @@ import com.google.common.util.concurrent.Service;
  * For each slave cluster it selects a random number of peers
  * using a replication ratio. For example, if replication ration = 0.1
  * and slave cluster has 100 region servers, 10 will be selected.
- * <p/>
+ * <p>
  * A stream is considered down when we cannot contact a region server on the
  * peer cluster for more than 55 seconds by default.
- * <p/>
+ * </p>
  *
  */
 @InterfaceAudience.Private
 public class ReplicationSource extends Thread
     implements ReplicationSourceInterface {
 
-  public static final Log LOG = LogFactory.getLog(ReplicationSource.class);
+  private static final Log LOG = LogFactory.getLog(ReplicationSource.class);
   // Queue of logs to process
   private PriorityBlockingQueue<Path> queue;
   private ReplicationQueues replicationQueues;
@@ -131,8 +131,6 @@ public class ReplicationSource extends Thread
   private ReplicationEndpoint replicationEndpoint;
   // A filter (or a chain of filters) for the WAL entries.
   private WALEntryFilter walEntryFilter;
-  // Context for ReplicationEndpoint#replicate()
-  private ReplicationEndpoint.ReplicateContext replicateContext;
   // throttler
   private ReplicationThrottler throttler;
 
@@ -187,8 +185,6 @@ public class ReplicationSource extends Thread
     this.peerId = this.replicationQueueInfo.getPeerId();
     this.logQueueWarnThreshold = this.conf.getInt("replication.source.log.queue.warn", 2);
     this.replicationEndpoint = replicationEndpoint;
-
-    this.replicateContext = new ReplicationEndpoint.ReplicateContext();
   }
 
   private void decorateConf() {
@@ -689,10 +685,14 @@ public class ReplicationSource extends Thread
             this.throttler.resetStartTick();
           }
         }
+        // create replicateContext here, so the entries can be GC'd upon return from this call stack
+        ReplicationEndpoint.ReplicateContext replicateContext = new ReplicationEndpoint.ReplicateContext();
         replicateContext.setEntries(entries).setSize(currentSize);
 
+        long startTimeNs = System.nanoTime();
         // send the edits to the endpoint. Will block until the edits are shipped and acknowledged
         boolean replicated = replicationEndpoint.replicate(replicateContext);
+        long endTimeNs = System.nanoTime();
 
         if (!replicated) {
           continue;
@@ -713,7 +713,8 @@ public class ReplicationSource extends Thread
         this.metrics.setAgeOfLastShippedOp(entries.get(entries.size()-1).getKey().getWriteTime());
         if (LOG.isTraceEnabled()) {
           LOG.trace("Replicated " + this.totalReplicatedEdits + " entries in total, or "
-              + this.totalReplicatedOperations + " operations");
+              + this.totalReplicatedOperations + " operations in " +
+              ((endTimeNs - startTimeNs)/1000000) + " ms");
         }
         break;
       } catch (Exception ex) {
@@ -868,5 +869,13 @@ public class ReplicationSource extends Thread
     return "Total replicated edits: " + totalReplicatedEdits +
       ", currently replicating from: " + this.currentPath +
       " at position: " + position;
+  }
+
+  /**
+   * Get Replication Source Metrics
+   * @return sourceMetrics
+   */
+  public MetricsSource getSourceMetrics() {
+    return this.metrics;
   }
 }

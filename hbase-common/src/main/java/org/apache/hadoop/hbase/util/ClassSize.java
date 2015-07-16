@@ -37,7 +37,7 @@ import org.apache.hadoop.hbase.classification.InterfaceAudience;
  */
 @InterfaceAudience.Private
 public class ClassSize {
-  static final Log LOG = LogFactory.getLog(ClassSize.class);
+  private static final Log LOG = LogFactory.getLog(ClassSize.class);
 
   private static int nrOfRefsPerObj = 2;
 
@@ -305,7 +305,7 @@ public class ClassSize {
   /**
    * Aligns a number to 8.
    * @param num number to align to 8
-   * @return smallest number >= input that is a multiple of 8
+   * @return smallest number &gt;= input that is a multiple of 8
    */
   public static int align(int num) {
     return (int)(align((long)num));
@@ -314,7 +314,7 @@ public class ClassSize {
   /**
    * Aligns a number to 8.
    * @param num number to align to 8
-   * @return smallest number >= input that is a multiple of 8
+   * @return smallest number &gt;= input that is a multiple of 8
    */
   public static long align(long num) {
     //The 7 comes from that the alignSize is 8 which is the number of bytes

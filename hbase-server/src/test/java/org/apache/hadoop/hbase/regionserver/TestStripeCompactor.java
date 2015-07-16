@@ -17,11 +17,20 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
-import static org.apache.hadoop.hbase.regionserver.StripeStoreFileManager.STRIPE_START_KEY;
-import static org.apache.hadoop.hbase.regionserver.StripeStoreFileManager.STRIPE_END_KEY;
 import static org.apache.hadoop.hbase.regionserver.StripeStoreFileManager.OPEN_KEY;
+import static org.apache.hadoop.hbase.regionserver.StripeStoreFileManager.STRIPE_END_KEY;
+import static org.apache.hadoop.hbase.regionserver.StripeStoreFileManager.STRIPE_START_KEY;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyBoolean;
+import static org.mockito.Matchers.anyLong;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -33,18 +42,20 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.KeyValue.KVComparator;
-import org.apache.hadoop.hbase.testclassification.RegionServerTests;
-import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequest;
+import org.apache.hadoop.hbase.regionserver.compactions.NoLimitCompactionThroughputController;
 import org.apache.hadoop.hbase.regionserver.compactions.StripeCompactor;
+import org.apache.hadoop.hbase.testclassification.RegionServerTests;
+import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -121,7 +132,8 @@ public class TestStripeCompactor {
     StoreFileWritersCapture writers = new StoreFileWritersCapture();
     StripeCompactor sc = createCompactor(writers, input);
     List<Path> paths =
-        sc.compact(createDummyRequest(), Arrays.asList(boundaries), majorFrom, majorTo);
+        sc.compact(createDummyRequest(), Arrays.asList(boundaries), majorFrom, majorTo,
+          NoLimitCompactionThroughputController.INSTANCE);
     writers.verifyKvs(output, allFiles, true);
     if (allFiles) {
       assertEquals(output.length, paths.size());
@@ -156,14 +168,15 @@ public class TestStripeCompactor {
       byte[] left, byte[] right, KeyValue[][] output) throws Exception {
     StoreFileWritersCapture writers = new StoreFileWritersCapture();
     StripeCompactor sc = createCompactor(writers, input);
-    List<Path> paths = sc.compact(
-        createDummyRequest(), targetCount, targetSize, left, right, null, null);
+    List<Path> paths =
+        sc.compact(createDummyRequest(), targetCount, targetSize, left, right, null, null,
+          NoLimitCompactionThroughputController.INSTANCE);
     assertEquals(output.length, paths.size());
     writers.verifyKvs(output, true, true);
     List<byte[]> boundaries = new ArrayList<byte[]>();
     boundaries.add(left);
     for (int i = 1; i < output.length; ++i) {
-      boundaries.add(output[i][0].getRow());
+      boundaries.add(CellUtil.cloneRow(output[i][0]));
     }
     boundaries.add(right);
     writers.verifyBoundaries(boundaries.toArray(new byte[][] {}));
@@ -176,7 +189,7 @@ public class TestStripeCompactor {
 
     // Create store mock that is satisfactory for compactor.
     HColumnDescriptor col = new HColumnDescriptor(NAME_OF_THINGS);
-    ScanInfo si = new ScanInfo(col, Long.MAX_VALUE, 0, new KVComparator());
+    ScanInfo si = new ScanInfo(col, Long.MAX_VALUE, 0, CellComparator.COMPARATOR);
     Store store = mock(Store.class);
     when(store.getFamily()).thenReturn(col);
     when(store.getScanInfo()).thenReturn(si);
@@ -185,7 +198,7 @@ public class TestStripeCompactor {
     when(store.getRegionInfo()).thenReturn(new HRegionInfo(TABLE_NAME));
     when(store.createWriterInTmp(anyLong(), any(Compression.Algorithm.class),
         anyBoolean(), anyBoolean(), anyBoolean())).thenAnswer(writers);
-    when(store.getComparator()).thenReturn(new KVComparator());
+    when(store.getComparator()).thenReturn(CellComparator.COMPARATOR);
 
     return new StripeCompactor(conf, store) {
       @Override
@@ -230,10 +243,13 @@ public class TestStripeCompactor {
       results.add(kvs.remove(0));
       return !kvs.isEmpty();
     }
+
     @Override
-    public boolean next(List<Cell> result, int limit) throws IOException {
+    public boolean next(List<Cell> result, ScannerContext scannerContext)
+        throws IOException {
       return next(result);
     }
+
     @Override
     public void close() throws IOException {}
   }

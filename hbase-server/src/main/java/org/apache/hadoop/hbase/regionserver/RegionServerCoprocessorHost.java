@@ -22,9 +22,12 @@ import java.io.IOException;
 import java.util.Comparator;
 import java.util.List;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
@@ -35,12 +38,15 @@ import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.coprocessor.RegionServerCoprocessorEnvironment;
 import org.apache.hadoop.hbase.coprocessor.RegionServerObserver;
 import org.apache.hadoop.hbase.coprocessor.SingletonCoprocessorService;
+import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.WALEntry;
 import org.apache.hadoop.hbase.replication.ReplicationEndpoint;
 
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.COPROC)
 @InterfaceStability.Evolving
 public class RegionServerCoprocessorHost extends
     CoprocessorHost<RegionServerCoprocessorHost.RegionServerEnvironment> {
+
+  private static final Log LOG = LogFactory.getLog(RegionServerCoprocessorHost.class);
 
   private RegionServerServices rsServices;
 
@@ -49,7 +55,16 @@ public class RegionServerCoprocessorHost extends
     super(rsServices);
     this.rsServices = rsServices;
     this.conf = conf;
-    // load system default cp's from configuration.
+    // Log the state of coprocessor loading here; should appear only once or
+    // twice in the daemon log, depending on HBase version, because there is
+    // only one RegionServerCoprocessorHost instance in the RS process
+    boolean coprocessorsEnabled = conf.getBoolean(COPROCESSORS_ENABLED_CONF_KEY,
+      DEFAULT_COPROCESSORS_ENABLED);
+    boolean tableCoprocessorsEnabled = conf.getBoolean(USER_COPROCESSORS_ENABLED_CONF_KEY,
+      DEFAULT_USER_COPROCESSORS_ENABLED);
+    LOG.info("System coprocessor loading is " + (coprocessorsEnabled ? "enabled" : "disabled"));
+    LOG.info("Table coprocessor loading is " +
+      ((coprocessorsEnabled && tableCoprocessorsEnabled) ? "enabled" : "disabled"));
     loadSystemCoprocessors(conf, REGIONSERVER_COPROCESSOR_CONF_KEY);
   }
 
@@ -154,6 +169,28 @@ public class RegionServerCoprocessorHost extends
       public void call(RegionServerObserver oserver,
           ObserverContext<RegionServerCoprocessorEnvironment> ctx) throws IOException {
         oserver.postRollWALWriterRequest(ctx);
+      }
+    });
+  }
+
+  public void preReplicateLogEntries(final List<WALEntry> entries, final CellScanner cells)
+      throws IOException {
+    execOperation(coprocessors.isEmpty() ? null : new CoprocessorOperation() {
+      @Override
+      public void call(RegionServerObserver oserver,
+          ObserverContext<RegionServerCoprocessorEnvironment> ctx) throws IOException {
+        oserver.preReplicateLogEntries(ctx, entries, cells);
+      }
+    });
+  }
+
+  public void postReplicateLogEntries(final List<WALEntry> entries, final CellScanner cells)
+      throws IOException {
+    execOperation(coprocessors.isEmpty() ? null : new CoprocessorOperation() {
+      @Override
+      public void call(RegionServerObserver oserver,
+          ObserverContext<RegionServerCoprocessorEnvironment> ctx) throws IOException {
+        oserver.postReplicateLogEntries(ctx, entries, cells);
       }
     });
   }

@@ -34,8 +34,9 @@
 #   HBASE_CLASSPATH_PREFIX Extra Java CLASSPATH entries that should be
 #                    prefixed to the system classpath.
 #
-#   HBASE_HEAPSIZE   The maximum amount of heap to use, in MB. 
-#                    Default is 1000.
+#   HBASE_HEAPSIZE   The maximum amount of heap to use.
+#                    Default is unset and uses the JVMs default setting
+#                    (usually 1/4th of the available memory).
 #
 #   HBASE_LIBRARY_PATH  HBase additions to JAVA_LIBRARY_PATH for adding
 #                    native libraries.
@@ -83,6 +84,7 @@ if [ $# = 0 ]; then
   echo "Some commands take arguments. Pass no args or -h for usage."
   echo "  shell           Run the HBase shell"
   echo "  hbck            Run the hbase 'fsck' tool"
+  echo "  snapshot        Create a new snapshot of a table"
   echo "  wal             Write-ahead-log analyzer"
   echo "  hfile           Store file analyzer"
   echo "  zkcli           Run the ZooKeeper shell"
@@ -213,14 +215,17 @@ if [ "$HBASE_LIBRARY_PATH" != "" ]; then
 fi
 
 #If avail, add Hadoop to the CLASSPATH and to the JAVA_LIBRARY_PATH
-HADOOP_IN_PATH=$(PATH="${HADOOP_HOME:-${HADOOP_PREFIX}}/bin:$PATH" which hadoop 2>/dev/null)
-if [ -f ${HADOOP_IN_PATH} ]; then
-  HADOOP_JAVA_LIBRARY_PATH=$(HADOOP_CLASSPATH="$CLASSPATH" ${HADOOP_IN_PATH} \
-                             org.apache.hadoop.hbase.util.GetJavaProperty java.library.path 2>/dev/null)
-  if [ -n "$HADOOP_JAVA_LIBRARY_PATH" ]; then
-    JAVA_LIBRARY_PATH=$(append_path "${JAVA_LIBRARY_PATH}" "$HADOOP_JAVA_LIBRARY_PATH")
+# Allow this functionality to be disabled
+if [ "$HBASE_DISABLE_HADOOP_CLASSPATH_LOOKUP" != "true" ] ; then
+  HADOOP_IN_PATH=$(PATH="${HADOOP_HOME:-${HADOOP_PREFIX}}/bin:$PATH" which hadoop 2>/dev/null)
+  if [ -f ${HADOOP_IN_PATH} ]; then
+    HADOOP_JAVA_LIBRARY_PATH=$(HADOOP_CLASSPATH="$CLASSPATH" ${HADOOP_IN_PATH} \
+                               org.apache.hadoop.hbase.util.GetJavaProperty java.library.path 2>/dev/null)
+    if [ -n "$HADOOP_JAVA_LIBRARY_PATH" ]; then
+      JAVA_LIBRARY_PATH=$(append_path "${JAVA_LIBRARY_PATH}" "$HADOOP_JAVA_LIBRARY_PATH")
+    fi
+    CLASSPATH=$(append_path "${CLASSPATH}" `${HADOOP_IN_PATH} classpath 2>/dev/null`)
   fi
-  CLASSPATH=$(append_path "${CLASSPATH}" `${HADOOP_IN_PATH} classpath 2>/dev/null`)
 fi
 
 # Add user-specified CLASSPATH last
@@ -302,6 +307,8 @@ elif [ "$COMMAND" = "zkcli" ] ; then
   CLASS="org.apache.hadoop.hbase.zookeeper.ZooKeeperMainServer"
 elif [ "$COMMAND" = "upgrade" ] ; then
   CLASS="org.apache.hadoop.hbase.migration.UpgradeTo96"
+elif [ "$COMMAND" = "snapshot" ] ; then
+  CLASS="org.apache.hadoop.hbase.snapshot.CreateSnapshot"
 elif [ "$COMMAND" = "master" ] ; then
   CLASS='org.apache.hadoop.hbase.master.HMaster'
   if [ "$1" != "stop" ] && [ "$1" != "clear" ] ; then

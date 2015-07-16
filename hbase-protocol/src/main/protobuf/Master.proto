@@ -18,6 +18,7 @@
 
 // All to do with the Master.  Includes schema management since these
 // changes are run by the Master process.
+package hbase.pb;
 
 option java_package = "org.apache.hadoop.hbase.protobuf.generated";
 option java_outer_classname = "MasterProtos";
@@ -28,6 +29,7 @@ option optimize_for = SPEED;
 import "HBase.proto";
 import "Client.proto";
 import "ClusterStatus.proto";
+import "ErrorHandling.proto";
 import "Quota.proto";
 
 /* Column-level protobufs */
@@ -35,6 +37,8 @@ import "Quota.proto";
 message AddColumnRequest {
   required TableName table_name = 1;
   required ColumnFamilySchema column_families = 2;
+  optional uint64 nonce_group = 3 [default = 0];
+  optional uint64 nonce = 4 [default = 0];
 }
 
 message AddColumnResponse {
@@ -43,6 +47,8 @@ message AddColumnResponse {
 message DeleteColumnRequest {
   required TableName table_name = 1;
   required bytes column_name = 2;
+  optional uint64 nonce_group = 3 [default = 0];
+  optional uint64 nonce = 4 [default = 0];
 }
 
 message DeleteColumnResponse {
@@ -51,6 +57,8 @@ message DeleteColumnResponse {
 message ModifyColumnRequest {
   required TableName table_name = 1;
   required ColumnFamilySchema column_families = 2;
+  optional uint64 nonce_group = 3 [default = 0];
+  optional uint64 nonce = 4 [default = 0];
 }
 
 message ModifyColumnResponse {
@@ -105,46 +113,64 @@ message OfflineRegionResponse {
 message CreateTableRequest {
   required TableSchema table_schema = 1;
   repeated bytes split_keys = 2;
+  optional uint64 nonce_group = 3 [default = 0];
+  optional uint64 nonce = 4 [default = 0];
 }
 
 message CreateTableResponse {
+  optional uint64 proc_id = 1;
 }
 
 message DeleteTableRequest {
   required TableName table_name = 1;
+  optional uint64 nonce_group = 2 [default = 0];
+  optional uint64 nonce = 3 [default = 0];
 }
 
 message DeleteTableResponse {
+  optional uint64 proc_id = 1;
 }
 
 message TruncateTableRequest {
   required TableName tableName = 1;
   optional bool preserveSplits = 2 [default = false];
+  optional uint64 nonce_group = 3 [default = 0];
+  optional uint64 nonce = 4 [default = 0];
 }
 
 message TruncateTableResponse {
+  optional uint64 proc_id = 1;
 }
 
 message EnableTableRequest {
   required TableName table_name = 1;
+  optional uint64 nonce_group = 2 [default = 0];
+  optional uint64 nonce = 3 [default = 0];
 }
 
 message EnableTableResponse {
+  optional uint64 proc_id = 1;
 }
 
 message DisableTableRequest {
   required TableName table_name = 1;
+  optional uint64 nonce_group = 2 [default = 0];
+  optional uint64 nonce = 3 [default = 0];
 }
 
 message DisableTableResponse {
+  optional uint64 proc_id = 1;
 }
 
 message ModifyTableRequest {
   required TableName table_name = 1;
   required TableSchema table_schema = 2;
+  optional uint64 nonce_group = 3 [default = 0];
+  optional uint64 nonce = 4 [default = 0];
 }
 
 message ModifyTableResponse {
+  optional uint64 proc_id = 1;
 }
 
 /* Namespace-level protobufs */
@@ -230,6 +256,13 @@ message SetBalancerRunningRequest {
 
 message SetBalancerRunningResponse {
   optional bool prev_balance_value = 1;
+}
+
+message IsBalancerEnabledRequest {
+}
+
+message IsBalancerEnabledResponse {
+  required bool enabled = 1;
 }
 
 message RunCatalogScanRequest {
@@ -373,6 +406,24 @@ message IsProcedureDoneResponse {
         optional ProcedureDescription snapshot = 2;
 }
 
+message GetProcedureResultRequest {
+  required uint64 proc_id = 1;
+}
+
+message GetProcedureResultResponse {
+  enum State {
+    NOT_FOUND = 0;
+    RUNNING = 1;
+    FINISHED = 2;
+  }
+
+  required State state = 1;
+  optional uint64 start_time = 2;
+  optional uint64 last_update = 3;
+  optional bytes result = 4;
+  optional ForeignExceptionMessage exception = 5;
+}
+
 message SetQuotaRequest {
   optional string user_name = 1;
   optional string user_group = 2;
@@ -385,6 +436,18 @@ message SetQuotaRequest {
 }
 
 message SetQuotaResponse {
+}
+
+message MajorCompactionTimestampRequest {
+  required TableName table_name = 1;
+}
+
+message MajorCompactionTimestampForRegionRequest {
+  required RegionSpecifier region = 1;
+}
+
+message MajorCompactionTimestampResponse {
+  required int64 compaction_timestamp = 1;
 }
 
 service MasterService {
@@ -496,6 +559,12 @@ service MasterService {
   rpc SetBalancerRunning(SetBalancerRunningRequest)
     returns(SetBalancerRunningResponse);
 
+  /**
+   * Query whether the Region Balancer is running.
+   */
+  rpc IsBalancerEnabled(IsBalancerEnabledRequest)
+    returns(IsBalancerEnabledResponse);
+
   /** Get a run of the catalog janitor */
   rpc RunCatalogScan(RunCatalogScanRequest)
      returns(RunCatalogScanResponse);
@@ -601,4 +670,15 @@ service MasterService {
 
   /** Apply the new quota settings */
   rpc SetQuota(SetQuotaRequest) returns(SetQuotaResponse);
+
+  /** Returns the timestamp of the last major compaction */
+  rpc getLastMajorCompactionTimestamp(MajorCompactionTimestampRequest)
+    returns(MajorCompactionTimestampResponse);
+
+  /** Returns the timestamp of the last major compaction */
+  rpc getLastMajorCompactionTimestampForRegion(MajorCompactionTimestampForRegionRequest)
+    returns(MajorCompactionTimestampResponse);
+
+  rpc getProcedureResult(GetProcedureResultRequest)
+    returns(GetProcedureResultResponse);
 }

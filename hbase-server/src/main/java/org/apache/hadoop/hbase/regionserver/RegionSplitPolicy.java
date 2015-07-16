@@ -18,7 +18,7 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import java.io.IOException;
-import java.util.Map;
+import java.util.List;
 
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
@@ -74,11 +74,11 @@ public abstract class RegionSplitPolicy extends Configured {
     if (explicitSplitPoint != null) {
       return explicitSplitPoint;
     }
-    Map<byte[], Store> stores = region.getStores();
+    List<Store> stores = region.getStores();
 
     byte[] splitPointFromLargestStore = null;
     long largestStoreSize = 0;
-    for (Store s : stores.values()) {
+    for (Store s : stores) {
       byte[] splitPoint = s.getSplitPoint();
       long storeSize = s.getSize();
       if (splitPoint != null && largestStoreSize < storeSize) {
@@ -133,8 +133,19 @@ public abstract class RegionSplitPolicy extends Configured {
    * the split reference even when the split row not lies in the range. This method can be used
    * to decide, whether to skip the the StoreFile range check or not.
    * @return whether to skip the StoreFile range check or not
+   * @deprecated Use {@link #skipStoreFileRangeCheck(String)}} instead
    */
+  @Deprecated
   protected boolean skipStoreFileRangeCheck() {
     return false;
+  }
+
+  /**
+   * See {@link #skipStoreFileRangeCheck()} javadoc.
+   * @param familyName
+   * @return whether to skip the StoreFile range check or not
+   */
+  protected boolean skipStoreFileRangeCheck(String familyName) {
+    return skipStoreFileRangeCheck();
   }
 }

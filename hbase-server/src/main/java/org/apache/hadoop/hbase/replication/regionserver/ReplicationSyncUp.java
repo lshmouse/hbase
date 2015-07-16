@@ -24,6 +24,7 @@ import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Abortable;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
@@ -47,7 +48,7 @@ import org.apache.hadoop.util.ToolRunner;
 
 public class ReplicationSyncUp extends Configured implements Tool {
 
-  static final Log LOG = LogFactory.getLog(ReplicationSyncUp.class.getName());
+  private static final Log LOG = LogFactory.getLog(ReplicationSyncUp.class.getName());
 
   private static Configuration conf;
 
@@ -179,6 +180,11 @@ public class ReplicationSyncUp extends Configured implements Tool {
 
     @Override
     public ClusterConnection getConnection() {
+      return null;
+    }
+
+    @Override
+    public ChoreService getChoreService() {
       return null;
     }
   }

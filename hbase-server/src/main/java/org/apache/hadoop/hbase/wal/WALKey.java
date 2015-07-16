@@ -70,7 +70,7 @@ import org.apache.hadoop.hbase.regionserver.wal.WALCellCodec;
 //       purposes. They need to be merged into WALEntry.
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.REPLICATION)
 public class WALKey implements SequenceId, Comparable<WALKey> {
-  public static final Log LOG = LogFactory.getLog(WALKey.class);
+  private static final Log LOG = LogFactory.getLog(WALKey.class);
 
   // should be < 0 (@see HLogKey#readFields(DataInput))
   // version 2 supports WAL compression
@@ -269,7 +269,7 @@ public class WALKey implements SequenceId, Comparable<WALKey> {
   /**
    * Allow that the log sequence id to be set post-construction and release all waiters on assigned
    * sequence number.
-   * Only public for {@link org.apache.hadoop.hbase.regionserver.wal.FSWALEntry}
+   * Only public for org.apache.hadoop.hbase.regionserver.wal.FSWALEntry
    * @param sequence
    */
   @InterfaceAudience.Private
@@ -295,9 +295,9 @@ public class WALKey implements SequenceId, Comparable<WALKey> {
   }
   
   /**
-   * Wait for sequence number is assigned & return the assigned value
+   * Wait for sequence number is assigned &amp; return the assigned value
    * @return long the new assigned sequence number
-   * @throws InterruptedException
+   * @throws IOException
    */
   @Override
   public long getSequenceId() throws IOException {

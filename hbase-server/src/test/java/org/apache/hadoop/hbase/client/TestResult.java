@@ -31,9 +31,11 @@ import junit.framework.TestCase;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -69,7 +71,7 @@ public class TestResult extends TestCase {
    */
   public void testResultAsCellScanner() throws IOException {
     Cell [] cells = genKVs(row, family, value, 1, 10);
-    Arrays.sort(cells, KeyValue.COMPARATOR);
+    Arrays.sort(cells, CellComparator.COMPARATOR);
     Result r = Result.create(cells);
     assertSame(r, cells);
     // Assert I run over same result multiple times.
@@ -91,7 +93,7 @@ public class TestResult extends TestCase {
   public void testBasicGetColumn() throws Exception {
     KeyValue [] kvs = genKVs(row, family, value, 1, 100);
 
-    Arrays.sort(kvs, KeyValue.COMPARATOR);
+    Arrays.sort(kvs, CellComparator.COMPARATOR);
 
     Result r = Result.create(kvs);
 
@@ -113,7 +115,7 @@ public class TestResult extends TestCase {
     System.arraycopy(kvs1, 0, kvs, 0, kvs1.length);
     System.arraycopy(kvs2, 0, kvs, kvs1.length, kvs2.length);
 
-    Arrays.sort(kvs, KeyValue.COMPARATOR);
+    Arrays.sort(kvs, CellComparator.COMPARATOR);
 
     Result r = Result.create(kvs);
     for (int i = 0; i < 100; ++i) {
@@ -130,7 +132,7 @@ public class TestResult extends TestCase {
   public void testBasicGetValue() throws Exception {
     KeyValue [] kvs = genKVs(row, family, value, 1, 100);
 
-    Arrays.sort(kvs, KeyValue.COMPARATOR);
+    Arrays.sort(kvs, CellComparator.COMPARATOR);
 
     Result r = Result.create(kvs);
 
@@ -150,7 +152,7 @@ public class TestResult extends TestCase {
     System.arraycopy(kvs1, 0, kvs, 0, kvs1.length);
     System.arraycopy(kvs2, 0, kvs, kvs1.length, kvs2.length);
 
-    Arrays.sort(kvs, KeyValue.COMPARATOR);
+    Arrays.sort(kvs, CellComparator.COMPARATOR);
 
     Result r = Result.create(kvs);
     for (int i = 0; i < 100; ++i) {
@@ -164,7 +166,7 @@ public class TestResult extends TestCase {
   public void testBasicLoadValue() throws Exception {
     KeyValue [] kvs = genKVs(row, family, value, 1, 100);
 
-    Arrays.sort(kvs, KeyValue.COMPARATOR);
+    Arrays.sort(kvs, CellComparator.COMPARATOR);
 
     Result r = Result.create(kvs);
     ByteBuffer loadValueBuffer = ByteBuffer.allocate(1024);
@@ -189,7 +191,7 @@ public class TestResult extends TestCase {
     System.arraycopy(kvs1, 0, kvs, 0, kvs1.length);
     System.arraycopy(kvs2, 0, kvs, kvs1.length, kvs2.length);
 
-    Arrays.sort(kvs, KeyValue.COMPARATOR);
+    Arrays.sort(kvs, CellComparator.COMPARATOR);
 
     ByteBuffer loadValueBuffer = ByteBuffer.allocate(1024);
 
@@ -229,6 +231,32 @@ public class TestResult extends TestCase {
     }
   }
 
+  /**
+   * Verifies that one can't modify instance of EMPTY_RESULT.
+   */
+  public void testEmptyResultIsReadonly() {
+    Result emptyResult = Result.EMPTY_RESULT;
+    Result otherResult = new Result();
+
+    try {
+      emptyResult.copyFrom(otherResult);
+      fail("UnsupportedOperationException should have been thrown!");
+    } catch (UnsupportedOperationException ex) {
+      LOG.debug("As expected: " + ex.getMessage());
+    }
+    try {
+      emptyResult.addResults(ClientProtos.RegionLoadStats.getDefaultInstance());
+      fail("UnsupportedOperationException should have been thrown!");
+    } catch (UnsupportedOperationException ex) {
+      LOG.debug("As expected: " + ex.getMessage());
+    }
+    try {
+      emptyResult.setExists(true);
+      fail("UnsupportedOperationException should have been thrown!");
+    } catch (UnsupportedOperationException ex) {
+      LOG.debug("As expected: " + ex.getMessage());
+    }
+  }
 
   /**
    * Microbenchmark that compares {@link Result#getValue} and {@link Result#loadValue} performance.
@@ -252,7 +280,7 @@ public class TestResult extends TestCase {
 
     KeyValue [] kvs = genKVs(Bytes.toBytes(rowSB.toString()), family,
         Bytes.toBytes(valueSB.toString()), 1, n);
-    Arrays.sort(kvs, KeyValue.COMPARATOR);
+    Arrays.sort(kvs, CellComparator.COMPARATOR);
     ByteBuffer loadValueBuffer = ByteBuffer.allocate(1024);
     Result r = Result.create(kvs);
 

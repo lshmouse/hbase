@@ -28,7 +28,7 @@ import org.apache.hadoop.hbase.util.Bytes;
 /**
  * Represents an interval of version timestamps.
  * <p>
- * Evaluated according to minStamp <= timestamp < maxStamp
+ * Evaluated according to minStamp &lt;= timestamp &lt; maxStamp
  * or [minStamp,maxStamp) in interval notation.
  * <p>
  * Only used internally; should not be accessed directly by clients.
@@ -166,6 +166,7 @@ public class TimeRange {
    * 1 if timestamp is greater than timerange
    */
   public int compare(long timestamp) {
+    if (allTime) return 0;
     if (timestamp < minStamp) {
       return -1;
     } else if (timestamp >= maxStamp) {

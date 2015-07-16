@@ -18,17 +18,17 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
-import com.google.protobuf.Service;
-
 import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.executor.ExecutorService;
 import org.apache.hadoop.hbase.ipc.RpcServerInterface;
 import org.apache.hadoop.hbase.master.TableLockManager;
@@ -37,12 +37,14 @@ import org.apache.hadoop.hbase.quotas.RegionServerQuotaManager;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.zookeeper.KeeperException;
 
+import com.google.protobuf.Service;
+
 /**
  * Services provided by {@link HRegionServer}
  */
-@InterfaceAudience.Private
-public interface RegionServerServices
-    extends OnlineRegions, FavoredNodesForRegion {
+@InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.COPROC)
+@InterfaceStability.Evolving
+public interface RegionServerServices extends OnlineRegions, FavoredNodesForRegion {
   /**
    * @return True if this regionserver is stopping.
    */
@@ -78,24 +80,92 @@ public interface RegionServerServices
   RegionServerQuotaManager getRegionServerQuotaManager();
 
   /**
+   * Context for postOpenDeployTasks().
+   */
+  class PostOpenDeployContext {
+    private final Region region;
+    private final long masterSystemTime;
+
+    @InterfaceAudience.Private
+    public PostOpenDeployContext(Region region, long masterSystemTime) {
+      this.region = region;
+      this.masterSystemTime = masterSystemTime;
+    }
+    public Region getRegion() {
+      return region;
+    }
+    public long getMasterSystemTime() {
+      return masterSystemTime;
+    }
+  }
+
+  /**
+   * Tasks to perform after region open to complete deploy of region on
+   * regionserver
+   *
+   * @param context the context
+   * @throws KeeperException
+   * @throws IOException
+   */
+  void postOpenDeployTasks(final PostOpenDeployContext context) throws KeeperException, IOException;
+
+  /**
    * Tasks to perform after region open to complete deploy of region on
    * regionserver
    *
    * @param r Region to open.
    * @throws KeeperException
    * @throws IOException
+   * @deprecated use {@link #postOpenDeployTasks(PostOpenDeployContext)}
    */
-  void postOpenDeployTasks(final HRegion r)
-  throws KeeperException, IOException;
+  @Deprecated
+  void postOpenDeployTasks(final Region r) throws KeeperException, IOException;
+
+  class RegionStateTransitionContext {
+    private final TransitionCode code;
+    private final long openSeqNum;
+    private final long masterSystemTime;
+    private final HRegionInfo[] hris;
+
+    @InterfaceAudience.Private
+    public RegionStateTransitionContext(TransitionCode code, long openSeqNum, long masterSystemTime,
+        HRegionInfo... hris) {
+      this.code = code;
+      this.openSeqNum = openSeqNum;
+      this.masterSystemTime = masterSystemTime;
+      this.hris = hris;
+    }
+    public TransitionCode getCode() {
+      return code;
+    }
+    public long getOpenSeqNum() {
+      return openSeqNum;
+    }
+    public long getMasterSystemTime() {
+      return masterSystemTime;
+    }
+    public HRegionInfo[] getHris() {
+      return hris;
+    }
+  }
 
   /**
    * Notify master that a handler requests to change a region state
    */
+  boolean reportRegionStateTransition(final RegionStateTransitionContext context);
+
+  /**
+   * Notify master that a handler requests to change a region state
+   * @deprecated use {@link #reportRegionStateTransition(RegionStateTransitionContext)}
+   */
+  @Deprecated
   boolean reportRegionStateTransition(TransitionCode code, long openSeqNum, HRegionInfo... hris);
 
   /**
    * Notify master that a handler requests to change a region state
+   * @deprecated use {@link #reportRegionStateTransition(RegionStateTransitionContext)}
    */
+  @Deprecated
   boolean reportRegionStateTransition(TransitionCode code, HRegionInfo... hris);
 
   /**
@@ -127,7 +197,7 @@ public interface RegionServerServices
   /**
    * @return set of recovering regions on the hosting region server
    */
-  Map<String, HRegion> getRecoveringRegions();
+  Map<String, Region> getRecoveringRegions();
 
   /**
    * Only required for "old" log replay; if it's removed, remove this.
@@ -153,4 +223,12 @@ public interface RegionServerServices
    * @return heap memory manager instance
    */
   HeapMemoryManager getHeapMemoryManager();
+
+  /**
+   * @return the max compaction pressure of all stores on this regionserver. The value should be
+   *         greater than or equal to 0.0, and any value greater than 1.0 means we enter the
+   *         emergency state that some stores have too many store files.
+   * @see org.apache.hadoop.hbase.regionserver.Store#getCompactionPressure()
+   */
+  double getCompactionPressure();
 }

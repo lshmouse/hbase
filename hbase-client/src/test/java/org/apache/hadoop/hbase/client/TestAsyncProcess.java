@@ -39,6 +39,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HConstants;
@@ -65,6 +67,7 @@ import org.mockito.Mockito;
 
 @Category({ClientTests.class, MediumTests.class})
 public class TestAsyncProcess {
+  private final static Log LOG = LogFactory.getLog(TestAsyncProcess.class);
   private static final TableName DUMMY_TABLE =
       TableName.valueOf("DUMMY_TABLE");
   private static final byte[] DUMMY_BYTES_1 = "DUMMY_BYTES_1".getBytes();
@@ -338,7 +341,7 @@ public class TestAsyncProcess {
   /**
    * Returns our async process.
    */
-  static class MyConnectionImpl extends ConnectionManager.HConnectionImplementation {
+  static class MyConnectionImpl extends ConnectionImplementation {
     final AtomicInteger nbThreads = new AtomicInteger(0);
 
 
@@ -726,13 +729,13 @@ public class TestAsyncProcess {
     //  puts, we may raise an exception in the middle of the list. It's then up to the caller to
     //  manage what was inserted, what was tried but failed, and what was not even tried.
     p = createPut(1, true);
-    Assert.assertEquals(0, mutator.getWriteBuffer().size());
+    Assert.assertEquals(0, mutator.writeAsyncBuffer.size());
     try {
       mutator.mutate(p);
       Assert.fail();
     } catch (RetriesExhaustedException expected) {
     }
-    Assert.assertEquals("the put should not been inserted.", 0, mutator.getWriteBuffer().size());
+    Assert.assertEquals("the put should not been inserted.", 0, mutator.writeAsyncBuffer.size());
   }
 
 
@@ -798,7 +801,7 @@ public class TestAsyncProcess {
     ClusterConnection conn = new MyConnectionImpl(configuration);
     BufferedMutatorImpl mutator =
         new BufferedMutatorImpl(conn, null, null, new BufferedMutatorParams(DUMMY_TABLE));
-    configuration.setBoolean(ConnectionManager.RETRIES_BY_SERVER_KEY, true);
+    configuration.setBoolean(ConnectionImplementation.RETRIES_BY_SERVER_KEY, true);
 
     MyAsyncProcess ap = new MyAsyncProcess(conn, configuration, true);
     mutator.ap = ap;
@@ -864,7 +867,7 @@ public class TestAsyncProcess {
     MyAsyncProcess ap = new MyAsyncProcess(con, conf, con.nbThreads);
     ht.multiAp = ap;
 
-    ht.batch(gets, new Object[gets.size()]);
+    ht.batch(gets, null);
 
     Assert.assertEquals(ap.nbActions.get(), NB_REGS);
     Assert.assertEquals("1 multi response per server", 2, ap.nbMultiResponse.get());

@@ -348,6 +348,22 @@ module Hbase
       assert_no_match(eval("/" + key + "/"), admin.describe(@test_name))
     end
 
+    define_test "alter should be able to remove a list of table attributes" do
+      drop_test_table(@test_name)
+
+      key_1 = "TestAttr1"
+      key_2 = "TestAttr2"
+      admin.create(@test_name, { NAME => 'i'}, METADATA => { key_1 => 1, key_2 => 2 })
+
+      # eval() is used to convert a string to regex
+      assert_match(eval("/" + key_1 + "/"), admin.describe(@test_name))
+      assert_match(eval("/" + key_2 + "/"), admin.describe(@test_name))
+
+      admin.alter(@test_name, true, 'METHOD' => 'table_att_unset', 'NAME' => [ key_1, key_2 ])
+      assert_no_match(eval("/" + key_1 + "/"), admin.describe(@test_name))
+      assert_no_match(eval("/" + key_2 + "/"), admin.describe(@test_name))
+    end
+
     define_test "get_table should get a real table" do
       drop_test_table(@test_name)
       create_test_table(@test_name)
@@ -355,6 +371,18 @@ module Hbase
       table = table(@test_name)
       assert_not_equal(nil, table)
       table.close
+    end
+
+    define_test "Get replication status" do
+      replication_status("replication", "both")
+    end
+
+    define_test "Get replication source metrics information" do
+      replication_status("replication", "source")
+    end
+
+    define_test "Get replication sink metrics information" do
+      replication_status("replication", "sink")
     end
   end
 end

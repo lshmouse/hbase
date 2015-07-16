@@ -17,12 +17,17 @@
  */
 package org.apache.hadoop.hbase.ipc;
 
+import java.net.InetAddress;
+
+import org.apache.hadoop.hbase.security.User;
+
+import org.apache.hadoop.hbase.protobuf.generated.RPCProtos.VersionInfo;
 
 public interface RpcCallContext extends Delayable {
   /**
    * Check if the caller who made this IPC call has disconnected.
    * If called from outside the context of IPC, this does nothing.
-   * @return < 0 if the caller is still connected. The time in ms
+   * @return &lt; 0 if the caller is still connected. The time in ms
    *  since the disconnection otherwise
    */
   long disconnectSince();
@@ -36,4 +41,34 @@ public interface RpcCallContext extends Delayable {
    * @return True if the client supports cellblocks, else return all content in pb
    */
   boolean isClientCellBlockSupport();
+
+  /**
+   * Returns the user credentials associated with the current RPC request or
+   * <code>null</code> if no credentials were provided.
+   * @return A User
+   */
+  User getRequestUser();
+
+  /**
+   * @return Current request's user name or null if none ongoing.
+   */
+  String getRequestUserName();
+
+  /**
+   * @return Address of remote client if a request is ongoing, else null
+   */
+  InetAddress getRemoteAddress();
+
+  /**
+   * @return the client version info, or null if the information is not present
+   */
+  VersionInfo getClientVersionInfo();
+
+  /**
+   * Sets a callback which has to be executed at the end of this RPC call. Such a callback is an
+   * optional one for any Rpc call.
+   *
+   * @param callback
+   */
+  void setCallBack(RpcCallback callback);
 }

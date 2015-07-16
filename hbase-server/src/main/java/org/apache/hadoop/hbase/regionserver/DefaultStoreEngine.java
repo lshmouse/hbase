@@ -24,12 +24,13 @@ import java.util.List;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.hadoop.hbase.KeyValue.KVComparator;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
 import org.apache.hadoop.hbase.regionserver.compactions.ExploringCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.compactions.RatioBasedCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.compactions.DefaultCompactor;
+import org.apache.hadoop.hbase.regionserver.compactions.CompactionThroughputController;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
 
 /**
@@ -62,8 +63,7 @@ public class DefaultStoreEngine extends StoreEngine<
 
   @Override
   protected void createComponents(
-      Configuration conf, Store store, KVComparator kvComparator) throws IOException {
-    storeFileManager = new DefaultStoreFileManager(kvComparator, conf);
+      Configuration conf, Store store, CellComparator kvComparator) throws IOException {
     String className = conf.get(DEFAULT_COMPACTOR_CLASS_KEY, DEFAULT_COMPACTOR_CLASS.getName());
     try {
       compactor = ReflectionUtils.instantiateWithCustomCtor(className,
@@ -80,6 +80,7 @@ public class DefaultStoreEngine extends StoreEngine<
     } catch (Exception e) {
       throw new IOException("Unable to load configured compaction policy '" + className + "'", e);
     }
+    storeFileManager = new DefaultStoreFileManager(kvComparator, conf, compactionPolicy.getConf());
     className = conf.get(
         DEFAULT_STORE_FLUSHER_CLASS_KEY, DEFAULT_STORE_FLUSHER_CLASS.getName());
     try {
@@ -106,8 +107,9 @@ public class DefaultStoreEngine extends StoreEngine<
     }
 
     @Override
-    public List<Path> compact() throws IOException {
-      return compactor.compact(request);
+    public List<Path> compact(CompactionThroughputController throughputController)
+        throws IOException {
+      return compactor.compact(request, throughputController);
     }
 
     @Override

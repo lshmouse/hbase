@@ -37,6 +37,7 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
@@ -48,9 +49,8 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.KeyValue.KVComparator;
 import org.apache.hadoop.hbase.fs.HFileSystem;
 import org.apache.hadoop.hbase.io.FSDataInputStreamWrapper;
 import org.apache.hadoop.hbase.io.compress.Compression;
@@ -61,12 +61,11 @@ import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.BytesBytesPair;
 import org.apache.hadoop.hbase.protobuf.generated.HFileProtos;
 import org.apache.hadoop.hbase.util.BloomFilterWriter;
-import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.ChecksumType;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.io.Writable;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 
 /**
@@ -120,11 +119,12 @@ import com.google.common.base.Preconditions;
  * File is made of data blocks followed by meta data blocks (if any), a fileinfo
  * block, data block index, meta data block index, and a fixed size trailer
  * which records the offsets at which file changes content type.
- * <pre>&lt;data blocks>&lt;meta blocks>&lt;fileinfo>&lt;data index>&lt;meta index>&lt;trailer></pre>
+ * <pre>&lt;data blocks&gt;&lt;meta blocks&gt;&lt;fileinfo&gt;&lt;
+ * data index&gt;&lt;meta index&gt;&lt;trailer&gt;</pre>
  * Each block has a bit of magic at its start.  Block are comprised of
  * key/values.  In data blocks, they are both byte arrays.  Metadata blocks are
  * a String key and a byte array value.  An empty file looks like this:
- * <pre>&lt;fileinfo>&lt;trailer></pre>.  That is, there are not data nor meta
+ * <pre>&lt;fileinfo&gt;&lt;trailer&gt;</pre>.  That is, there are not data nor meta
  * blocks present.
  * <p>
  * TODO: Do scanners need to be able to take a start and end row?
@@ -134,6 +134,7 @@ import com.google.common.base.Preconditions;
  */
 @InterfaceAudience.Private
 public class HFile {
+  // LOG is being used in HFileBlock and CheckSumUtil
   static final Log LOG = LogFactory.getLog(HFile.class);
 
   /**
@@ -178,9 +179,6 @@ public class HFile {
    * The number of bytes per checksum.
    */
   public static final int DEFAULT_BYTES_PER_CHECKSUM = 16 * 1024;
-  // TODO: This define is done in three places.  Fix.
-  public static final ChecksumType DEFAULT_CHECKSUM_TYPE = ChecksumType.CRC32;
-
   // For measuring number of checksum failures
   static final AtomicLong checksumFailures = new AtomicLong();
 
@@ -197,6 +195,8 @@ public class HFile {
 
   /** API required to write an {@link HFile} */
   public interface Writer extends Closeable {
+    /** Max memstore (mvcc) timestamp in FileInfo */
+    public static final byte [] MAX_MEMSTORE_TS_KEY = Bytes.toBytes("MAX_MEMSTORE_TS_KEY");
 
     /** Add an element to the file info map. */
     void appendFileInfo(byte[] key, byte[] value) throws IOException;
@@ -248,7 +248,8 @@ public class HFile {
     protected FileSystem fs;
     protected Path path;
     protected FSDataOutputStream ostream;
-    protected KVComparator comparator = KeyValue.COMPARATOR;
+    protected CellComparator comparator = 
+        CellComparator.COMPARATOR;
     protected InetSocketAddress[] favoredNodes;
     private HFileContext fileContext;
 
@@ -271,7 +272,7 @@ public class HFile {
       return this;
     }
 
-    public WriterFactory withComparator(KVComparator comparator) {
+    public WriterFactory withComparator(CellComparator comparator) {
       Preconditions.checkNotNull(comparator);
       this.comparator = comparator;
       return this;
@@ -294,14 +295,14 @@ public class HFile {
             "filesystem/path or path");
       }
       if (path != null) {
-        ostream = AbstractHFileWriter.createOutputStream(conf, fs, path, favoredNodes);
+        ostream = HFileWriterImpl.createOutputStream(conf, fs, path, favoredNodes);
       }
       return createWriter(fs, path, ostream,
                    comparator, fileContext);
     }
 
     protected abstract Writer createWriter(FileSystem fs, Path path, FSDataOutputStream ostream,
-        KVComparator comparator, HFileContext fileContext) throws IOException;
+        CellComparator comparator, HFileContext fileContext) throws IOException;
   }
 
   /** The configuration key for HFile version to use for new files */
@@ -333,9 +334,12 @@ public class HFile {
     int version = getFormatVersion(conf);
     switch (version) {
     case 2:
-      return new HFileWriterV2.WriterFactoryV2(conf, cacheConf);
+      throw new IllegalArgumentException("This should never happen. " +
+        "Did you change hfile.format.version to read v2? This version of the software writes v3" +
+        " hfiles only (but it can read v2 files without having to update hfile.format.version " +
+        "in hbase-site.xml)");
     case 3:
-      return new HFileWriterV3.WriterFactoryV3(conf, cacheConf);
+      return new HFileWriterFactory(conf, cacheConf);
     default:
       throw new IllegalArgumentException("Cannot create writer for HFile " +
           "format version " + version);
@@ -381,7 +385,7 @@ public class HFile {
      */
     String getName();
 
-    KVComparator getComparator();
+    CellComparator getComparator();
 
     HFileScanner getScanner(boolean cacheBlocks, final boolean pread, final boolean isCompaction);
 
@@ -389,15 +393,15 @@ public class HFile {
 
     Map<byte[], byte[]> loadFileInfo() throws IOException;
 
-    byte[] getLastKey();
+    Cell getLastKey();
 
-    byte[] midkey() throws IOException;
+    Cell midkey() throws IOException;
 
     long length();
 
     long getEntries();
 
-    byte[] getFirstKey();
+    Cell getFirstKey();
 
     long indexSize();
 
@@ -440,6 +444,18 @@ public class HFile {
      * Return the file context of the HFile this reader belongs to
      */
     HFileContext getFileContext();
+
+    boolean shouldIncludeMemstoreTS();
+
+    boolean isDecodeMemstoreTS();
+
+    DataBlockEncoding getEffectiveEncodingInCache(boolean isCompaction);
+
+    @VisibleForTesting
+    HFileBlock.FSReader getUncachedBlockReader();
+
+    @VisibleForTesting
+    boolean prefetchComplete();
   }
 
   /**
@@ -463,9 +479,10 @@ public class HFile {
       trailer = FixedFileTrailer.readFromStream(fsdis.getStream(isHBaseChecksum), size);
       switch (trailer.getMajorVersion()) {
       case 2:
-        return new HFileReaderV2(path, trailer, fsdis, size, cacheConf, hfs, conf);
+        LOG.debug("Opening HFile v2 with v3 reader");
+        // Fall through.
       case 3 :
-        return new HFileReaderV3(path, trailer, fsdis, size, cacheConf, hfs, conf);
+        return new HFileReaderImpl(path, trailer, fsdis, size, cacheConf, hfs, conf);
       default:
         throw new IllegalArgumentException("Invalid HFile version " + trailer.getMajorVersion());
       }
@@ -489,6 +506,7 @@ public class HFile {
    * @return A version specific Hfile Reader
    * @throws IOException If file is invalid, will throw CorruptHFileException flavored IOException
    */
+  @SuppressWarnings("resource")
   public static Reader createReader(FileSystem fs, Path path,
       FSDataInputStreamWrapper fsdis, long size, CacheConfig cacheConf, Configuration conf)
       throws IOException {
@@ -533,6 +551,47 @@ public class HFile {
   }
 
   /**
+   * Returns true if the specified file has a valid HFile Trailer.
+   * @param fs filesystem
+   * @param path Path to file to verify
+   * @return true if the file has a valid HFile Trailer, otherwise false
+   * @throws IOException if failed to read from the underlying stream
+   */
+  public static boolean isHFileFormat(final FileSystem fs, final Path path) throws IOException {
+    return isHFileFormat(fs, fs.getFileStatus(path));
+  }
+
+  /**
+   * Returns true if the specified file has a valid HFile Trailer.
+   * @param fs filesystem
+   * @param fileStatus the file to verify
+   * @return true if the file has a valid HFile Trailer, otherwise false
+   * @throws IOException if failed to read from the underlying stream
+   */
+  public static boolean isHFileFormat(final FileSystem fs, final FileStatus fileStatus)
+      throws IOException {
+    final Path path = fileStatus.getPath();
+    final long size = fileStatus.getLen();
+    FSDataInputStreamWrapper fsdis = new FSDataInputStreamWrapper(fs, path);
+    try {
+      boolean isHBaseChecksum = fsdis.shouldUseHBaseChecksum();
+      assert !isHBaseChecksum; // Initially we must read with FS checksum.
+      FixedFileTrailer.readFromStream(fsdis.getStream(isHBaseChecksum), size);
+      return true;
+    } catch (IllegalArgumentException e) {
+      return false;
+    } catch (IOException e) {
+      throw e;
+    } finally {
+      try {
+        fsdis.close();
+      } catch (Throwable t) {
+        LOG.warn("Error closing fsdis FSDataInputStreamWrapper: " + path, t);
+      }
+    }
+  }
+
+  /**
    * Metadata for this file. Conjured by the writer. Read in by the reader.
    */
   public static class FileInfo implements SortedMap<byte[], byte[]> {
@@ -541,6 +600,7 @@ public class HFile {
     static final byte [] LASTKEY = Bytes.toBytes(RESERVED_PREFIX + "LASTKEY");
     static final byte [] AVG_KEY_LEN = Bytes.toBytes(RESERVED_PREFIX + "AVG_KEY_LEN");
     static final byte [] AVG_VALUE_LEN = Bytes.toBytes(RESERVED_PREFIX + "AVG_VALUE_LEN");
+    static final byte [] CREATE_TIME_TS = Bytes.toBytes(RESERVED_PREFIX + "CREATE_TIME_TS");
     static final byte [] COMPARATOR = Bytes.toBytes(RESERVED_PREFIX + "COMPARATOR");
     static final byte [] TAGS_COMPRESSED = Bytes.toBytes(RESERVED_PREFIX + "TAGS_COMPRESSED");
     public static final byte [] MAX_TAGS_LEN = Bytes.toBytes(RESERVED_PREFIX + "MAX_TAGS_LEN");
@@ -770,7 +830,7 @@ public class HFile {
   }
 
   /**
-   * Returns all files belonging to the given region directory. Could return an
+   * Returns all HFiles belonging to the given region directory. Could return an
    * empty list.
    *
    * @param fs  The file system reference.
@@ -780,18 +840,20 @@ public class HFile {
    */
   static List<Path> getStoreFiles(FileSystem fs, Path regionDir)
       throws IOException {
-    List<Path> res = new ArrayList<Path>();
+    List<Path> regionHFiles = new ArrayList<Path>();
     PathFilter dirFilter = new FSUtils.DirFilter(fs);
     FileStatus[] familyDirs = fs.listStatus(regionDir, dirFilter);
     for(FileStatus dir : familyDirs) {
       FileStatus[] files = fs.listStatus(dir.getPath());
       for (FileStatus file : files) {
-        if (!file.isDirectory()) {
-          res.add(file.getPath());
+        if (!file.isDirectory() &&
+            (!file.getPath().toString().contains(HConstants.HREGION_OLDLOGDIR_NAME)) &&
+            (!file.getPath().toString().contains(HConstants.RECOVERED_EDITS_DIR))) {
+          regionHFiles.add(file.getPath());
         }
       }
     }
-    return res;
+    return regionHFiles;
   }
 
   /**
@@ -809,6 +871,18 @@ public class HFile {
       throw new IllegalArgumentException("Invalid HFile version: " + version
           + " (expected to be " + "between " + MIN_FORMAT_VERSION + " and "
           + MAX_FORMAT_VERSION + ")");
+    }
+  }
+
+
+  public static void checkHFileVersion(final Configuration c) {
+    int version = c.getInt(FORMAT_VERSION_KEY, MAX_FORMAT_VERSION);
+    if (version < MAX_FORMAT_VERSION || version > MAX_FORMAT_VERSION) {
+      throw new IllegalArgumentException("The setting for " + FORMAT_VERSION_KEY +
+        " (in your hbase-*.xml files) is " + version + " which does not match " +
+        MAX_FORMAT_VERSION +
+        "; are you running with a configuration from an older or newer hbase install (an " +
+        "incompatible hbase-default.xml or hbase-site.xml on your CLASSPATH)?");
     }
   }
 

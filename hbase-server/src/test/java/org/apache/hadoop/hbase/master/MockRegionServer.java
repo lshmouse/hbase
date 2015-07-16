@@ -32,6 +32,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hbase.CellScannable;
 import org.apache.hadoop.hbase.CellUtil;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.ServerName;
@@ -65,6 +66,8 @@ import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.MergeRegionsReques
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.MergeRegionsResponse;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.OpenRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.OpenRegionResponse;
+import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.WarmupRegionRequest;
+import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.WarmupRegionResponse;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.ReplicateWALEntryRequest;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.ReplicateWALEntryResponse;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.RollWALWriterRequest;
@@ -96,11 +99,12 @@ import org.apache.hadoop.hbase.regionserver.FlushRequester;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HeapMemoryManager;
 import org.apache.hadoop.hbase.regionserver.Leases;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionServerAccounting;
 import org.apache.hadoop.hbase.regionserver.RegionServerServices;
 import org.apache.hadoop.hbase.regionserver.ServerNonceManager;
-import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
 import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.apache.zookeeper.KeeperException;
@@ -252,12 +256,12 @@ ClientProtos.ClientService.BlockingInterface, RegionServerServices {
   }
 
   @Override
-  public void addToOnlineRegions(HRegion r) {
+  public void addToOnlineRegions(Region r) {
     // TODO Auto-generated method stub
   }
 
   @Override
-  public boolean removeFromOnlineRegions(HRegion r, ServerName destination) {
+  public boolean removeFromOnlineRegions(Region r, ServerName destination) {
     // TODO Auto-generated method stub
     return false;
   }
@@ -326,13 +330,19 @@ ClientProtos.ClientService.BlockingInterface, RegionServerServices {
     return new NullTableLockManager();
   }
 
+  @Override
   public RegionServerQuotaManager getRegionServerQuotaManager() {
     return null;
   }
 
   @Override
-  public void postOpenDeployTasks(HRegion r)
-      throws KeeperException, IOException {
+  public void postOpenDeployTasks(Region r) throws KeeperException, IOException {
+    // TODO Auto-generated method stub
+  }
+
+  @Override
+  public void postOpenDeployTasks(PostOpenDeployContext context) throws KeeperException,
+      IOException {
     // TODO Auto-generated method stub
   }
 
@@ -459,6 +469,12 @@ ClientProtos.ClientService.BlockingInterface, RegionServerServices {
   }
 
   @Override
+  public WarmupRegionResponse warmupRegion(RpcController controller,
+      WarmupRegionRequest request) throws ServiceException {
+    //TODO Auto-generated method stub
+    return null;
+  }
+  @Override
   public CloseRegionResponse closeRegion(RpcController controller,
       CloseRegionRequest request) throws ServiceException {
     // TODO Auto-generated method stub
@@ -522,7 +538,7 @@ ClientProtos.ClientService.BlockingInterface, RegionServerServices {
   }
 
   @Override
-  public List<HRegion> getOnlineRegions(TableName tableName) throws IOException {
+  public List<Region> getOnlineRegions(TableName tableName) throws IOException {
     // TODO Auto-generated method stub
     return null;
   }
@@ -551,6 +567,11 @@ ClientProtos.ClientService.BlockingInterface, RegionServerServices {
   }
 
   @Override
+  public ChoreService getChoreService() {
+    return null;
+  }
+
+  @Override
   public void updateRegionFavoredNodesMapping(String encodedRegionName,
       List<org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.ServerName> favoredNodes) {
   }
@@ -569,7 +590,7 @@ ClientProtos.ClientService.BlockingInterface, RegionServerServices {
   }
 
   @Override
-  public Map<String, HRegion> getRecoveringRegions() {
+  public Map<String, Region> getRecoveringRegions() {
     // TODO Auto-generated method stub
     return null;
   }
@@ -597,6 +618,11 @@ ClientProtos.ClientService.BlockingInterface, RegionServerServices {
   }
 
   @Override
+  public boolean reportRegionStateTransition(RegionStateTransitionContext context) {
+    return false;
+  }
+
+  @Override
   public boolean registerService(Service service) {
     // TODO Auto-generated method stub
     return false;
@@ -619,5 +645,10 @@ ClientProtos.ClientService.BlockingInterface, RegionServerServices {
   @Override
   public HeapMemoryManager getHeapMemoryManager() {
     return null;
+  }
+
+  @Override
+  public double getCompactionPressure() {
+    return 0;
   }
 }

@@ -49,6 +49,8 @@ module HBaseConstants
   METHOD = "METHOD"
   MAXLENGTH = "MAXLENGTH"
   CACHE_BLOCKS = "CACHE_BLOCKS"
+  ALL_METRICS = "ALL_METRICS"
+  METRICS = "METRICS"
   REVERSED = "REVERSED"
   REPLICATION_SCOPE = "REPLICATION_SCOPE"
   INTERVAL = 'INTERVAL'
@@ -72,6 +74,11 @@ module HBaseConstants
   TYPE = 'TYPE'
   NONE = 'NONE'
   VALUE = 'VALUE'
+  ENDPOINT_CLASSNAME = 'ENDPOINT_CLASSNAME'
+  CLUSTER_KEY = 'CLUSTER_KEY'
+  TABLE_CFS = 'TABLE_CFS'
+  CONFIG = 'CONFIG'
+  DATA = 'DATA'
 
   # Load constants from hbase java API
   def self.promote_constants(constants)

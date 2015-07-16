@@ -26,12 +26,13 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.hadoop.hbase.KeyValue.KVComparator;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequest;
 import org.apache.hadoop.hbase.regionserver.compactions.StripeCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.compactions.StripeCompactor;
+import org.apache.hadoop.hbase.regionserver.compactions.CompactionThroughputController;
 
 import com.google.common.base.Preconditions;
 
@@ -41,7 +42,7 @@ import com.google.common.base.Preconditions;
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.CONFIG)
 public class StripeStoreEngine extends StoreEngine<StripeStoreFlusher,
   StripeCompactionPolicy, StripeCompactor, StripeStoreFileManager> {
-  static final Log LOG = LogFactory.getLog(StripeStoreEngine.class);
+  private static final Log LOG = LogFactory.getLog(StripeStoreEngine.class);
   private StripeStoreConfig config;
 
   @Override
@@ -56,7 +57,7 @@ public class StripeStoreEngine extends StoreEngine<StripeStoreFlusher,
 
   @Override
   protected void createComponents(
-      Configuration conf, Store store, KVComparator comparator) throws IOException {
+      Configuration conf, Store store, CellComparator comparator) throws IOException {
     this.config = new StripeStoreConfig(conf, store);
     this.compactionPolicy = new StripeCompactionPolicy(conf, store, config);
     this.storeFileManager = new StripeStoreFileManager(comparator, conf, this.config);
@@ -98,9 +99,10 @@ public class StripeStoreEngine extends StoreEngine<StripeStoreFlusher,
     }
 
     @Override
-    public List<Path> compact() throws IOException {
+    public List<Path> compact(CompactionThroughputController throughputController)
+        throws IOException {
       Preconditions.checkArgument(this.stripeRequest != null, "Cannot compact without selection");
-      return this.stripeRequest.execute(compactor);
+      return this.stripeRequest.execute(compactor, throughputController);
     }
   }
 }

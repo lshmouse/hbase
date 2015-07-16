@@ -45,6 +45,7 @@ import java.util.regex.Pattern;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -66,6 +67,7 @@ import org.apache.hadoop.hbase.fs.HFileSystem;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
 import org.apache.hadoop.hbase.security.AccessDeniedException;
+import org.apache.hadoop.hbase.util.HBaseFsck.ErrorReporter;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.FSProtos;
 import org.apache.hadoop.hbase.regionserver.HRegion;
@@ -102,20 +104,34 @@ public abstract class FSUtils {
     super();
   }
 
-  /*
-   * Sets storage policy for given path according to config setting
-   * @param fs
-   * @param conf
+  /**
+   * Sets storage policy for given path according to config setting.
+   * If the passed path is a directory, we'll set the storage policy for all files
+   * created in the future in said directory. Note that this change in storage
+   * policy takes place at the HDFS level; it will persist beyond this RS's lifecycle.
+   * If we're running on a version of HDFS that doesn't support the given storage policy
+   * (or storage policies at all), then we'll issue a log message and continue.
+   *
+   * See http://hadoop.apache.org/docs/r2.6.0/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html
+   *
+   * @param fs We only do anything if an instance of DistributedFileSystem
+   * @param conf used to look up storage policy with given key; not modified.
    * @param path the Path whose storage policy is to be set
-   * @param policyKey
-   * @param defaultPolicy
+   * @param policyKey e.g. HConstants.WAL_STORAGE_POLICY
+   * @param defaultPolicy usually should be the policy NONE to delegate to HDFS
    */
   public static void setStoragePolicy(final FileSystem fs, final Configuration conf,
       final Path path, final String policyKey, final String defaultPolicy) {
     String storagePolicy = conf.get(policyKey, defaultPolicy).toUpperCase();
-    if (!storagePolicy.equals(defaultPolicy) &&
-        fs instanceof DistributedFileSystem) {
+    if (storagePolicy.equals(defaultPolicy)) {
+      if (LOG.isTraceEnabled()) {
+        LOG.trace("default policy of " + defaultPolicy + " requested, exiting early.");
+      }
+      return;
+    }
+    if (fs instanceof DistributedFileSystem) {
       DistributedFileSystem dfs = (DistributedFileSystem)fs;
+      // Once our minimum supported Hadoop version is 2.6.0 we can remove reflection.
       Class<? extends DistributedFileSystem> dfsClass = dfs.getClass();
       Method m = null;
       try {
@@ -124,10 +140,10 @@ public abstract class FSUtils {
         m.setAccessible(true);
       } catch (NoSuchMethodException e) {
         LOG.info("FileSystem doesn't support"
-            + " setStoragePolicy; --HDFS-7228 not available");
+            + " setStoragePolicy; --HDFS-6584 not available");
       } catch (SecurityException e) {
         LOG.info("Doesn't have access to setStoragePolicy on "
-            + "FileSystems --HDFS-7228 not available", e);
+            + "FileSystems --HDFS-6584 not available", e);
         m = null; // could happen on setAccessible()
       }
       if (m != null) {
@@ -135,15 +151,38 @@ public abstract class FSUtils {
           m.invoke(dfs, path, storagePolicy);
           LOG.info("set " + storagePolicy + " for " + path);
         } catch (Exception e) {
-          LOG.warn("Unable to set " + storagePolicy + " for " + path, e);
+          // check for lack of HDFS-7228
+          boolean probablyBadPolicy = false;
+          if (e instanceof InvocationTargetException) {
+            final Throwable exception = e.getCause();
+            if (exception instanceof RemoteException &&
+                HadoopIllegalArgumentException.class.getName().equals(
+                    ((RemoteException)exception).getClassName())) {
+              LOG.warn("Given storage policy, '" + storagePolicy + "', was rejected and probably " +
+                  "isn't a valid policy for the version of Hadoop you're running. I.e. if you're " +
+                  "trying to use SSD related policies then you're likely missing HDFS-7228. For " +
+                  "more information see the 'ArchivalStorage' docs for your Hadoop release.");
+              LOG.debug("More information about the invalid storage policy.", exception);
+              probablyBadPolicy = true;
+            }
+          }
+          if (!probablyBadPolicy) {
+            // This swallows FNFE, should we be throwing it? seems more likely to indicate dev
+            // misuse than a runtime problem with HDFS.
+            LOG.warn("Unable to set " + storagePolicy + " for " + path, e);
+          }
         }
       }
+    } else {
+      LOG.info("FileSystem isn't an instance of DistributedFileSystem; presuming it doesn't " +
+          "support setStoragePolicy.");
     }
   }
 
   /**
-   * Compare of path component. Does not consider schema; i.e. if schemas different but <code>path
-   * <code> starts with <code>rootPath<code>, then the function returns true
+   * Compare of path component. Does not consider schema; i.e. if schemas
+   * different but <code>path</code> starts with <code>rootPath</code>,
+   * then the function returns true
    * @param rootPath
    * @param path
    * @return True if <code>path</code> starts with <code>rootPath</code>
@@ -469,7 +508,7 @@ public abstract class FSUtils {
 
   /**
    * We use reflection because {@link DistributedFileSystem#setSafeMode(
-   * FSConstants.SafeModeAction action, boolean isChecked)} is not in hadoop 1.1
+   * HdfsConstants.SafeModeAction action, boolean isChecked)} is not in hadoop 1.1
    *
    * @param dfs
    * @return whether we're in safe mode
@@ -479,15 +518,15 @@ public abstract class FSUtils {
     boolean inSafeMode = false;
     try {
       Method m = DistributedFileSystem.class.getMethod("setSafeMode", new Class<?> []{
-          org.apache.hadoop.hdfs.protocol.FSConstants.SafeModeAction.class, boolean.class});
+          org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction.class, boolean.class});
       inSafeMode = (Boolean) m.invoke(dfs,
-        org.apache.hadoop.hdfs.protocol.FSConstants.SafeModeAction.SAFEMODE_GET, true);
+        org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction.SAFEMODE_GET, true);
     } catch (Exception e) {
       if (e instanceof IOException) throw (IOException) e;
 
       // Check whether dfs is on safemode.
       inSafeMode = dfs.setSafeMode(
-        org.apache.hadoop.hdfs.protocol.FSConstants.SafeModeAction.SAFEMODE_GET);
+        org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction.SAFEMODE_GET);
     }
     return inSafeMode;
   }
@@ -1204,7 +1243,7 @@ public abstract class FSUtils {
     private List<String> blacklist;
 
     /**
-     * Create a filter on the give filesystem with the specified blacklist
+     * Create a filter on the givem filesystem with the specified blacklist
      * @param fs filesystem to filter
      * @param directoryNameBlackList list of the names of the directories to filter. If
      *          <tt>null</tt>, all directories are returned
@@ -1397,7 +1436,7 @@ public abstract class FSUtils {
    * Given a particular table dir, return all the regiondirs inside it, excluding files such as
    * .tableinfo
    * @param fs A file system for the Path
-   * @param tableDir Path to a specific table directory <hbase.rootdir>/<tabledir>
+   * @param tableDir Path to a specific table directory &lt;hbase.rootdir&gt;/&lt;tabledir&gt;
    * @return List of paths to valid region directories in table dir.
    * @throws IOException
    */
@@ -1414,7 +1453,7 @@ public abstract class FSUtils {
 
   /**
    * Filter for all dirs that are legal column family names.  This is generally used for colfam
-   * dirs <hbase.rootdir>/<tabledir>/<regiondir>/<colfamdir>.
+   * dirs &lt;hbase.rootdir&gt;/&lt;tabledir&gt;/&lt;regiondir&gt;/&lt;colfamdir&gt;.
    */
   public static class FamilyDirFilter implements PathFilter {
     final FileSystem fs;
@@ -1546,6 +1585,28 @@ public abstract class FSUtils {
   public static Map<String, Path> getTableStoreFilePathMap(Map<String, Path> map,
   final FileSystem fs, final Path hbaseRootDir, TableName tableName)
   throws IOException {
+    return getTableStoreFilePathMap(map, fs, hbaseRootDir, tableName, null);
+  }
+
+  /**
+   * Runs through the HBase rootdir/tablename and creates a reverse lookup map for
+   * table StoreFile names to the full Path.
+   * <br>
+   * Example...<br>
+   * Key = 3944417774205889744  <br>
+   * Value = hdfs://localhost:51169/user/userid/-ROOT-/70236052/info/3944417774205889744
+   *
+   * @param map map to add values.  If null, this method will create and populate one to return
+   * @param fs  The file system to use.
+   * @param hbaseRootDir  The root directory to scan.
+   * @param tableName name of the table to scan.
+   * @param errors ErrorReporter instance or null
+   * @return Map keyed by StoreFile name with a value of the full Path.
+   * @throws IOException When scanning the directory fails.
+   */
+  public static Map<String, Path> getTableStoreFilePathMap(Map<String, Path> map,
+  final FileSystem fs, final Path hbaseRootDir, TableName tableName, ErrorReporter errors)
+  throws IOException {
     if (map == null) {
       map = new HashMap<String, Path>();
     }
@@ -1557,10 +1618,16 @@ public abstract class FSUtils {
     PathFilter familyFilter = new FamilyDirFilter(fs);
     FileStatus[] regionDirs = fs.listStatus(tableDir, new RegionDirFilter(fs));
     for (FileStatus regionDir : regionDirs) {
+      if (null != errors) {
+        errors.progress();
+      }
       Path dd = regionDir.getPath();
       // else its a region name, now look in region for families
       FileStatus[] familyDirs = fs.listStatus(dd, familyFilter);
       for (FileStatus familyDir : familyDirs) {
+        if (null != errors) {
+          errors.progress();
+        }
         Path family = familyDir.getPath();
         if (family.getName().equals(HConstants.RECOVERED_EDITS_DIR)) {
           continue;
@@ -1569,6 +1636,9 @@ public abstract class FSUtils {
         // put in map
         FileStatus[] familyStatus = fs.listStatus(family);
         for (FileStatus sfStatus : familyStatus) {
+          if (null != errors) {
+            errors.progress();
+          }
           Path sf = sfStatus.getPath();
           map.put( sf.getName(), sf);
         }
@@ -1589,7 +1659,6 @@ public abstract class FSUtils {
     return result;
   }
 
-
   /**
    * Runs through the HBase rootdir and creates a reverse lookup map for
    * table StoreFile names to the full Path.
@@ -1606,6 +1675,26 @@ public abstract class FSUtils {
   public static Map<String, Path> getTableStoreFilePathMap(
     final FileSystem fs, final Path hbaseRootDir)
   throws IOException {
+    return getTableStoreFilePathMap(fs, hbaseRootDir, null);
+  }
+
+  /**
+   * Runs through the HBase rootdir and creates a reverse lookup map for
+   * table StoreFile names to the full Path.
+   * <br>
+   * Example...<br>
+   * Key = 3944417774205889744  <br>
+   * Value = hdfs://localhost:51169/user/userid/-ROOT-/70236052/info/3944417774205889744
+   *
+   * @param fs  The file system to use.
+   * @param hbaseRootDir  The root directory to scan.
+   * @param errors ErrorReporter instance or null
+   * @return Map keyed by StoreFile name with a value of the full Path.
+   * @throws IOException When scanning the directory fails.
+   */
+  public static Map<String, Path> getTableStoreFilePathMap(
+    final FileSystem fs, final Path hbaseRootDir, ErrorReporter errors)
+  throws IOException {
     Map<String, Path> map = new HashMap<String, Path>();
 
     // if this method looks similar to 'getTableFragmentation' that is because
@@ -1614,7 +1703,7 @@ public abstract class FSUtils {
     // only include the directory paths to tables
     for (Path tableDir : FSUtils.getTableDirs(fs, hbaseRootDir)) {
       getTableStoreFilePathMap(map, fs, hbaseRootDir,
-          FSUtils.getTableName(tableDir));
+          FSUtils.getTableName(tableDir), errors);
     }
     return map;
   }

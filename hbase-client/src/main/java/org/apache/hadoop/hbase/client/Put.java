@@ -123,7 +123,7 @@ public class Put extends Mutation implements HeapSize, Comparable<Row> {
     this(putToCopy.getRow(), putToCopy.ts);
     this.familyMap = new TreeMap<byte [], List<Cell>>(Bytes.BYTES_COMPARATOR);
     for(Map.Entry<byte [], List<Cell>> entry: putToCopy.getFamilyCellMap().entrySet()) {
-      this.familyMap.put(entry.getKey(), entry.getValue());
+      this.familyMap.put(entry.getKey(), new ArrayList<Cell>(entry.getValue()));
     }
     this.durability = putToCopy.durability;
     for (Map.Entry<String, byte[]> entry : putToCopy.getAttributesMap().entrySet()) {
@@ -137,9 +137,22 @@ public class Put extends Mutation implements HeapSize, Comparable<Row> {
    * @param qualifier column qualifier
    * @param value column value
    * @return this
+   * @deprecated Since 1.0.0. Use {@link #addColumn(byte[], byte[], byte[])}
    */
+  @Deprecated
   public Put add(byte [] family, byte [] qualifier, byte [] value) {
-    return add(family, qualifier, this.ts, value);
+    return addColumn(family, qualifier, value);
+  }
+
+  /**
+   * Add the specified column and value to this Put operation.
+   * @param family family name
+   * @param qualifier column qualifier
+   * @param value column value
+   * @return this
+   */
+  public Put addColumn(byte [] family, byte [] qualifier, byte [] value) {
+    return addColumn(family, qualifier, this.ts, value);
   }
 
   /**
@@ -154,7 +167,10 @@ public class Put extends Mutation implements HeapSize, Comparable<Row> {
   /**
    * This expects that the underlying arrays won't change. It's intended
    * for usage internal HBase to and for advanced client applications.
+   * <p>Marked as audience Private as of 1.2.0. {@link Tag} is an internal implementation detail
+   * that should not be exposed publicly.
    */
+  @InterfaceAudience.Private
   public Put addImmutable(byte[] family, byte [] qualifier, byte [] value, Tag[] tag) {
     return addImmutable(family, qualifier, this.ts, value, tag);
   }
@@ -167,8 +183,23 @@ public class Put extends Mutation implements HeapSize, Comparable<Row> {
    * @param ts version timestamp
    * @param value column value
    * @return this
+   * @deprecated Since 1.0.0. Use {@link #addColumn(byte[], byte[], long, byte[])}
    */
+  @Deprecated
   public Put add(byte [] family, byte [] qualifier, long ts, byte [] value) {
+    return addColumn(family, qualifier, ts, value);
+  }
+
+  /**
+   * Add the specified column and value, with the specified timestamp as
+   * its version to this Put operation.
+   * @param family family name
+   * @param qualifier column qualifier
+   * @param ts version timestamp
+   * @param value column value
+   * @return this
+   */
+  public Put addColumn(byte [] family, byte [] qualifier, long ts, byte [] value) {
     if (ts < 0) {
       throw new IllegalArgumentException("Timestamp cannot be negative. ts=" + ts);
     }
@@ -198,8 +229,10 @@ public class Put extends Mutation implements HeapSize, Comparable<Row> {
   /**
    * This expects that the underlying arrays won't change. It's intended
    * for usage internal HBase to and for advanced client applications.
+   * <p>Marked as audience Private as of 1.2.0. {@link Tag} is an internal implementation detail
+   * that should not be exposed publicly.
    */
-  @SuppressWarnings("unchecked")
+  @InterfaceAudience.Private
   public Put addImmutable(byte[] family, byte[] qualifier, long ts, byte[] value, Tag[] tag) {
     List<Cell> list = getCellList(family);
     KeyValue kv = createPutKeyValue(family, qualifier, ts, value, tag);
@@ -211,7 +244,10 @@ public class Put extends Mutation implements HeapSize, Comparable<Row> {
   /**
    * This expects that the underlying arrays won't change. It's intended
    * for usage internal HBase to and for advanced client applications.
+   * <p>Marked as audience Private as of 1.2.0. {@link Tag} is an internal implementation detail
+   * that should not be exposed publicly.
    */
+  @InterfaceAudience.Private
   public Put addImmutable(byte[] family, ByteBuffer qualifier, long ts, ByteBuffer value,
                           Tag[] tag) {
     if (ts < 0) {
@@ -233,8 +269,23 @@ public class Put extends Mutation implements HeapSize, Comparable<Row> {
    * @param ts version timestamp
    * @param value column value
    * @return this
+   * @deprecated Since 1.0.0. Use {@link Put#addColumn(byte[], ByteBuffer, long, ByteBuffer)}
    */
+  @Deprecated
   public Put add(byte[] family, ByteBuffer qualifier, long ts, ByteBuffer value) {
+    return addColumn(family, qualifier, ts, value);
+  }
+
+  /**
+   * Add the specified column and value, with the specified timestamp as
+   * its version to this Put operation.
+   * @param family family name
+   * @param qualifier column qualifier
+   * @param ts version timestamp
+   * @param value column value
+   * @return this
+   */
+  public Put addColumn(byte[] family, ByteBuffer qualifier, long ts, ByteBuffer value) {
     if (ts < 0) {
       throw new IllegalArgumentException("Timestamp cannot be negative. ts=" + ts);
     }
@@ -286,7 +337,7 @@ public class Put extends Mutation implements HeapSize, Comparable<Row> {
 
   /**
    * A convenience method to determine if this object's familyMap contains
-   * a value assigned to the given family & qualifier.
+   * a value assigned to the given family &amp; qualifier.
    * Both given arguments must match the KeyValue object to return true.
    *
    * @param family column family

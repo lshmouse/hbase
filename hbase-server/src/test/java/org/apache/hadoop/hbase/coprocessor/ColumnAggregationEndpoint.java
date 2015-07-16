@@ -28,7 +28,6 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
-import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.coprocessor.protobuf.generated.ColumnAggregationProtos.ColumnAggregationService;
 import org.apache.hadoop.hbase.coprocessor.protobuf.generated.ColumnAggregationProtos.SumRequest;
@@ -47,7 +46,7 @@ import com.google.protobuf.Service;
  */
 public class ColumnAggregationEndpoint extends ColumnAggregationService
 implements Coprocessor, CoprocessorService {
-  static final Log LOG = LogFactory.getLog(ColumnAggregationEndpoint.class);
+  private static final Log LOG = LogFactory.getLog(ColumnAggregationEndpoint.class);
   private RegionCoprocessorEnvironment env = null;
 
   @Override

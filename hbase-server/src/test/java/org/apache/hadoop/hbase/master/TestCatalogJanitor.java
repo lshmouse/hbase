@@ -38,6 +38,7 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
@@ -53,16 +54,16 @@ import org.apache.hadoop.hbase.TableDescriptor;
 import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.ClusterConnection;
-import org.apache.hadoop.hbase.client.HConnectionManager;
 import org.apache.hadoop.hbase.client.HConnectionTestingUtility;
 import org.apache.hadoop.hbase.client.Result;
-import org.apache.hadoop.hbase.client.TableState;
 import org.apache.hadoop.hbase.coordination.BaseCoordinatedStateManager;
 import org.apache.hadoop.hbase.coordination.SplitLogManagerCoordination;
 import org.apache.hadoop.hbase.coordination.SplitLogManagerCoordination.SplitLogManagerDetails;
 import org.apache.hadoop.hbase.executor.ExecutorService;
 import org.apache.hadoop.hbase.io.Reference;
 import org.apache.hadoop.hbase.master.CatalogJanitor.SplitParentFirstComparator;
+import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
@@ -200,6 +201,11 @@ public class TestCatalogJanitor {
     @Override
     public void stop(String why) {
     }
+
+    @Override
+    public ChoreService getChoreService() {
+      return null;
+    }
   }
 
   /**
@@ -220,9 +226,13 @@ public class TestCatalogJanitor {
     }
 
     @Override
-    public void createTable(HTableDescriptor desc, byte[][] splitKeys)
-        throws IOException {
+    public long createTable(
+        final HTableDescriptor desc,
+        final byte[][] splitKeys,
+        final long nonceGroup,
+        final long nonce) throws IOException {
       // no-op
+      return -1;
     }
 
     @Override
@@ -232,6 +242,11 @@ public class TestCatalogJanitor {
 
     @Override
     public ExecutorService getExecutorService() {
+      return null;
+    }
+
+    @Override
+    public ChoreService getChoreService() {
       return null;
     }
 
@@ -247,6 +262,11 @@ public class TestCatalogJanitor {
 
     @Override
     public MasterQuotaManager getMasterQuotaManager() {
+      return null;
+    }
+
+    @Override
+    public ProcedureExecutor<MasterProcedureEnv> getMasterProcedureExecutor() {
       return null;
     }
 
@@ -365,7 +385,7 @@ public class TestCatalogJanitor {
     }
 
     @Override
-    public boolean isServerShutdownHandlerEnabled() {
+    public boolean isServerCrashProcessingEnabled() {
       return true;
     }
 
@@ -410,33 +430,68 @@ public class TestCatalogJanitor {
     }
 
     @Override
-    public void deleteTable(TableName tableName) throws IOException { }
+    public long deleteTable(
+        final TableName tableName,
+        final long nonceGroup,
+        final long nonce) throws IOException {
+      return -1;
+    }
 
     @Override
-    public void truncateTable(TableName tableName, boolean preserveSplits) throws IOException { }
+    public long truncateTable(
+        final TableName tableName,
+        final boolean preserveSplits,
+        final long nonceGroup,
+        final long nonce) throws IOException {
+      return -1;
+    }
 
 
     @Override
-    public void modifyTable(TableName tableName, HTableDescriptor descriptor)
-        throws IOException { }
+    public long modifyTable(
+        final TableName tableName,
+        final HTableDescriptor descriptor,
+        final long nonceGroup,
+        final long nonce) throws IOException {
+      return -1;
+    }
 
     @Override
-    public void enableTable(TableName tableName) throws IOException { }
+    public long enableTable(
+        final TableName tableName,
+        final long nonceGroup,
+        final long nonce) throws IOException {
+      return -1;
+    }
 
     @Override
-    public void disableTable(TableName tableName) throws IOException { }
+    public long disableTable(
+        TableName tableName,
+        final long nonceGroup,
+        final long nonce) throws IOException {
+      return -1;
+    }
 
     @Override
-    public void addColumn(TableName tableName, HColumnDescriptor column)
-        throws IOException { }
+    public void addColumn(
+        final TableName tableName,
+        final HColumnDescriptor columnDescriptor,
+        final long nonceGroup,
+        final long nonce) throws IOException { }
 
     @Override
-    public void modifyColumn(TableName tableName, HColumnDescriptor descriptor)
-        throws IOException { }
+    public void modifyColumn(
+        final TableName tableName,
+        final HColumnDescriptor descriptor,
+        final long nonceGroup,
+        final long nonce) throws IOException { }
 
     @Override
-    public void deleteColumn(TableName tableName, byte[] columnName)
-        throws IOException { }
+    public void deleteColumn(
+        final TableName tableName,
+        final byte[] columnName,
+        final long nonceGroup,
+        final long nonce) throws IOException { }
 
     @Override
     public TableLockManager getTableLockManager() {
@@ -457,6 +512,18 @@ public class TestCatalogJanitor {
     public boolean isInitialized() {
       // Auto-generated method stub
       return false;
+    }
+
+    @Override
+    public long getLastMajorCompactionTimestamp(TableName table) throws IOException {
+      // Auto-generated method stub
+      return 0;
+    }
+
+    @Override
+    public long getLastMajorCompactionTimestampForRegion(byte[] regionName) throws IOException {
+      // Auto-generated method stub
+      return 0;
     }
   }
 
@@ -632,7 +699,7 @@ public class TestCatalogJanitor {
     assertTrue(janitor.cleanParent(parent, regions.get(parent)));
 
     services.stop("test finished");
-    janitor.join();
+    janitor.cancel(true);
   }
 
   /**
@@ -700,7 +767,7 @@ public class TestCatalogJanitor {
     assertEquals(2, janitor.scan());
 
     services.stop("test finished");
-    janitor.join();
+    janitor.cancel(true);
   }
 
   /**
@@ -863,7 +930,7 @@ public class TestCatalogJanitor {
     FSUtils.delete(fs, rootdir, true);
     services.stop("Test finished");
     server.stop("Test finished");
-    janitor.join();
+    janitor.cancel(true);
   }
 
   /**
@@ -890,7 +957,7 @@ public class TestCatalogJanitor {
     MasterServices services = new MockMasterServices(server);
 
     // create the janitor
-    
+
     CatalogJanitor janitor = new CatalogJanitor(server, services);
 
     // Create regions.
@@ -948,7 +1015,7 @@ public class TestCatalogJanitor {
     // cleanup
     services.stop("Test finished");
     server.stop("shutdown");
-    janitor.join();
+    janitor.cancel(true);
   }
 
   private FileStatus[] addMockStoreFiles(int count, MasterServices services, Path storedir)
@@ -1021,8 +1088,7 @@ public class TestCatalogJanitor {
   }
 
   private TableDescriptor createTableDescriptor() {
-    TableDescriptor htd = new TableDescriptor(createHTableDescriptor(), TableState.State.ENABLED);
-    return htd;
+    return new TableDescriptor(createHTableDescriptor());
   }
 
   private MultiResponse buildMultiResponse(MultiRequest req) {

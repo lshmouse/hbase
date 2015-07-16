@@ -28,6 +28,8 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
@@ -82,9 +84,7 @@ public class TestVisibilityLabelsWithSLGStack {
   @Test
   public void testWithSAGStack() throws Exception {
     TableName tableName = TableName.valueOf(TEST_NAME.getMethodName());
-    Table table = null;
-    try {
-      table = TEST_UTIL.createTable(tableName, CF);
+    try (Table table = TEST_UTIL.createTable(tableName, CF)) {
       Put put = new Put(ROW_1);
       put.add(CF, Q1, HConstants.LATEST_TIMESTAMP, value);
       put.setCellVisibility(new CellVisibility(SECRET));
@@ -101,10 +101,6 @@ public class TestVisibilityLabelsWithSLGStack {
       Result next = scanner.next();
       assertNotNull(next.getColumnLatestCell(CF, Q1));
       assertNull(next.getColumnLatestCell(CF, Q2));
-    } finally {
-      if (table != null) {
-        table.close();
-      }
     }
   }
 
@@ -113,8 +109,8 @@ public class TestVisibilityLabelsWithSLGStack {
         new PrivilegedExceptionAction<VisibilityLabelsResponse>() {
       public VisibilityLabelsResponse run() throws Exception {
         String[] labels = { SECRET, CONFIDENTIAL };
-        try {
-          VisibilityClient.addLabels(conf, labels);
+        try (Connection conn = ConnectionFactory.createConnection(conf)) {
+          VisibilityClient.addLabels(conn, labels);
         } catch (Throwable t) {
           throw new IOException(t);
         }

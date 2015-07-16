@@ -17,6 +17,7 @@
  */
 
 // This file contains protocol buffers that are shared throughout HBase
+package hbase.pb;
 
 option java_package = "org.apache.hadoop.hbase.protobuf.generated";
 option java_outer_classname = "HBaseProtos";
@@ -55,14 +56,11 @@ message TableState {
   }
   // This is the table's state.
   required State state = 1;
-  required TableName table = 2;
-  optional uint64 timestamp = 3;
 }
 
 /** On HDFS representation of table state. */
 message TableDescriptor {
   required TableSchema schema = 1;
-  optional TableState.State state = 2 [ default = ENABLED ];
 }
 
 /**

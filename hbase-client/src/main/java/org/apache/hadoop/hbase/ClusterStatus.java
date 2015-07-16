@@ -85,15 +85,6 @@ public class ClusterStatus extends VersionedWritable {
   private String[] masterCoprocessors;
   private Boolean balancerOn;
 
-  /**
-   * Constructor, for Writable
-   * @deprecated Used by Writables and Writables are going away.
-   */
-  @Deprecated
-  public ClusterStatus() {
-    super();
-  }
-
   public ClusterStatus(final String hbaseVersion, final String clusterid,
       final Map<ServerName, ServerLoad> servers,
       final Collection<ServerName> deadServers,
@@ -118,6 +109,9 @@ public class ClusterStatus extends VersionedWritable {
    * @return the names of region servers on the dead list
    */
   public Collection<ServerName> getDeadServerNames() {
+    if (deadServers == null) {
+      return Collections.<ServerName>emptyList();
+    }
     return Collections.unmodifiableCollection(deadServers);
   }
 
@@ -125,15 +119,27 @@ public class ClusterStatus extends VersionedWritable {
    * @return the number of region servers in the cluster
    */
   public int getServersSize() {
-    return liveServers.size();
+    return liveServers != null ? liveServers.size() : 0;
+  }
+
+  /**
+   * @return the number of dead region servers in the cluster
+   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0
+   *             (<a href="https://issues.apache.org/jira/browse/HBASE-13656">HBASE-13656</a>).
+   *             Use {@link #getDeadServersSize()}.
+   */
+  @Deprecated
+  public int getDeadServers() {
+    return getDeadServersSize();
   }
 
   /**
    * @return the number of dead region servers in the cluster
    */
-  public int getDeadServers() {
-    return deadServers.size();
+  public int getDeadServersSize() {
+    return deadServers != null ? deadServers.size() : 0;
   }
+
 
   /**
    * @return the average cluster load
@@ -148,8 +154,10 @@ public class ClusterStatus extends VersionedWritable {
    */
   public int getRegionsCount() {
     int count = 0;
-    for (Map.Entry<ServerName, ServerLoad> e: this.liveServers.entrySet()) {
-      count += e.getValue().getNumberOfRegions();
+    if (liveServers != null && !liveServers.isEmpty()) {
+      for (Map.Entry<ServerName, ServerLoad> e: this.liveServers.entrySet()) {
+        count += e.getValue().getNumberOfRegions();
+      }
     }
     return count;
   }
@@ -159,8 +167,10 @@ public class ClusterStatus extends VersionedWritable {
    */
   public int getRequestsCount() {
     int count = 0;
-    for (Map.Entry<ServerName, ServerLoad> e: this.liveServers.entrySet()) {
-      count += e.getValue().getNumberOfRequests();
+    if (liveServers != null && !liveServers.isEmpty()) {
+      for (Map.Entry<ServerName, ServerLoad> e: this.liveServers.entrySet()) {
+        count += e.getValue().getNumberOfRequests();
+      }
     }
     return count;
   }
@@ -210,18 +220,10 @@ public class ClusterStatus extends VersionedWritable {
   // Getters
   //
 
-  /**
-   * Returns detailed region server information: A list of
-   * {@link ServerName}.
-   * @return region server information
-   * @deprecated Use {@link #getServers()}
-   */
-  @Deprecated
-  public Collection<ServerName> getServerInfo() {
-    return getServers();
-  }
-
   public Collection<ServerName> getServers() {
+    if (liveServers == null) {
+      return Collections.<ServerName>emptyList();
+    }
     return Collections.unmodifiableCollection(this.liveServers.keySet());
   }
 
@@ -237,13 +239,16 @@ public class ClusterStatus extends VersionedWritable {
    * @return the number of backup masters in the cluster
    */
   public int getBackupMastersSize() {
-    return this.backupMasters.size();
+    return backupMasters != null ? backupMasters.size() : 0;
   }
 
   /**
    * @return the names of backup masters
    */
   public Collection<ServerName> getBackupMasters() {
+    if (backupMasters == null) {
+      return Collections.<ServerName>emptyList();
+    }
     return Collections.unmodifiableCollection(this.backupMasters);
   }
 
@@ -252,7 +257,7 @@ public class ClusterStatus extends VersionedWritable {
    * @return Server's load or null if not found.
    */
   public ServerLoad getLoad(final ServerName sn) {
-    return this.liveServers.get(sn);
+    return liveServers != null ? liveServers.get(sn) : null;
   }
 
   @InterfaceAudience.Private
@@ -268,6 +273,29 @@ public class ClusterStatus extends VersionedWritable {
     return masterCoprocessors;
   }
 
+  public long getLastMajorCompactionTsForTable(TableName table) {
+    long result = Long.MAX_VALUE;
+    for (ServerName server : getServers()) {
+      ServerLoad load = getLoad(server);
+      for (RegionLoad rl : load.getRegionsLoad().values()) {
+        if (table.equals(HRegionInfo.getTable(rl.getName()))) {
+          result = Math.min(result, rl.getLastMajorCompactionTs());
+        }
+      }
+    }
+    return result == Long.MAX_VALUE ? 0 : result;
+  }
+
+  public long getLastMajorCompactionTsForRegion(final byte[] region) {
+    for (ServerName server : getServers()) {
+      ServerLoad load = getLoad(server);
+      RegionLoad rl = load.getRegionsLoad().get(region);
+      if (rl != null) {
+        return rl.getLastMajorCompactionTs();
+      }
+    }
+    return 0;
+  }
 
   public boolean isBalancerOn() {
     return balancerOn != null && balancerOn;
@@ -280,27 +308,41 @@ public class ClusterStatus extends VersionedWritable {
   public String toString() {
     StringBuilder sb = new StringBuilder(1024);
     sb.append("Master: " + master);
-    sb.append("\nNumber of backup masters: " + backupMasters.size());
-    for (ServerName serverName: backupMasters) {
-      sb.append("\n  " + serverName);
+
+    int backupMastersSize = getBackupMastersSize();
+    sb.append("\nNumber of backup masters: " + backupMastersSize);
+    if (backupMastersSize > 0) {
+      for (ServerName serverName: backupMasters) {
+        sb.append("\n  " + serverName);
+      }
     }
 
-    sb.append("\nNumber of live region servers: " + liveServers.size());
-    for (ServerName serverName: liveServers.keySet()) {
-      sb.append("\n  " + serverName.getServerName());
+    int serversSize = getServersSize();
+    sb.append("\nNumber of live region servers: " + serversSize);
+    if (serversSize > 0) {
+      for (ServerName serverName: liveServers.keySet()) {
+        sb.append("\n  " + serverName.getServerName());
+      }
     }
 
-    sb.append("\nNumber of dead region servers: " + deadServers.size());
-    for (ServerName serverName: deadServers) {
-      sb.append("\n  " + serverName);
+    int deadServerSize = getDeadServersSize();
+    sb.append("\nNumber of dead region servers: " + deadServerSize);
+    if (deadServerSize > 0) {
+      for (ServerName serverName: deadServers) {
+        sb.append("\n  " + serverName);
+      }
     }
 
     sb.append("\nAverage load: " + getAverageLoad());
     sb.append("\nNumber of requests: " + getRequestsCount());
     sb.append("\nNumber of regions: " + getRegionsCount());
-    sb.append("\nNumber of regions in transition: " + intransition.size());
-    for (RegionState state: intransition.values()) {
-      sb.append("\n  " + state.toDescriptiveString());
+
+    int ritSize = (intransition != null) ? intransition.size() : 0;
+    sb.append("\nNumber of regions in transition: " + ritSize);
+    if (ritSize > 0) {
+      for (RegionState state: intransition.values()) {
+        sb.append("\n  " + state.toDescriptiveString());
+      }
     }
     return sb.toString();
   }

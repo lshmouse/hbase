@@ -28,7 +28,7 @@ import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
 import org.apache.hadoop.hbase.procedure.ProcedureMember;
 import org.apache.hadoop.hbase.procedure.Subprocedure;
 import org.apache.hadoop.hbase.procedure.flush.RegionServerFlushTableProcedureManager.FlushTableSubprocedurePool;
-import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.regionserver.Region;
 
 /**
  * This flush region implementation uses the distributed procedure framework to flush
@@ -40,12 +40,12 @@ public class FlushTableSubprocedure extends Subprocedure {
   private static final Log LOG = LogFactory.getLog(FlushTableSubprocedure.class);
 
   private final String table;
-  private final List<HRegion> regions;
+  private final List<Region> regions;
   private final FlushTableSubprocedurePool taskManager;
 
   public FlushTableSubprocedure(ProcedureMember member,
       ForeignExceptionDispatcher errorListener, long wakeFrequency, long timeout,
-      List<HRegion> regions, String table,
+      List<Region> regions, String table,
       FlushTableSubprocedurePool taskManager) {
     super(member, table, errorListener, wakeFrequency, timeout);
     this.table = table;
@@ -53,9 +53,9 @@ public class FlushTableSubprocedure extends Subprocedure {
     this.taskManager = taskManager;
   }
 
-  private class RegionFlushTask implements Callable<Void> {
-    HRegion region;
-    RegionFlushTask(HRegion region) {
+  private static class RegionFlushTask implements Callable<Void> {
+    Region region;
+    RegionFlushTask(Region region) {
       this.region = region;
     }
 
@@ -65,7 +65,7 @@ public class FlushTableSubprocedure extends Subprocedure {
       region.startRegionOperation();
       try {
         LOG.debug("Flush region " + region.toString() + " started...");
-        region.flushcache();
+        region.flush(true);
       } finally {
         LOG.debug("Closing region operation on " + region);
         region.closeRegionOperation();
@@ -89,7 +89,7 @@ public class FlushTableSubprocedure extends Subprocedure {
     }
 
     // Add all hfiles already existing in region.
-    for (HRegion region : regions) {
+    for (Region region : regions) {
       // submit one task per region for parallelize by region.
       taskManager.submitTask(new RegionFlushTask(region));
       monitor.rethrowException();

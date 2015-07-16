@@ -30,9 +30,10 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.RegionLocator;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -47,7 +48,7 @@ import org.junit.experimental.categories.Category;
  */
 @Category({MiscTests.class, MediumTests.class})
 public class TestGlobalMemStoreSize {
-  private final Log LOG = LogFactory.getLog(this.getClass().getName());
+  private static final Log LOG = LogFactory.getLog(TestGlobalMemStoreSize.class);
   private static int regionServerNum = 4;
   private static int regionNum = 16;
   // total region num = region num + root and meta regions
@@ -73,12 +74,12 @@ public class TestGlobalMemStoreSize {
     cluster.waitForActiveAndReadyMaster();
 
     // Create a table with regions
-    byte [] table = Bytes.toBytes("TestGlobalMemStoreSize");
+    TableName table = TableName.valueOf("TestGlobalMemStoreSize");
     byte [] family = Bytes.toBytes("family");
     LOG.info("Creating table with " + regionNum + " regions");
-    HTable ht = TEST_UTIL.createMultiRegionTable(TableName.valueOf(table), family, regionNum);
+    Table ht = TEST_UTIL.createMultiRegionTable(table, family, regionNum);
     int numRegions = -1;
-    try (RegionLocator r = ht.getRegionLocator()) {
+    try (RegionLocator r = TEST_UTIL.getConnection().getRegionLocator(table)) {
       numRegions = r.getStartKeys().length;
     }
     assertEquals(regionNum,numRegions);
@@ -90,7 +91,7 @@ public class TestGlobalMemStoreSize {
           ProtobufUtil.getOnlineRegions(server.getRSRpcServices())) {
         globalMemStoreSize += 
           server.getFromOnlineRegions(regionInfo.getEncodedName()).
-          getMemstoreSize().get();
+          getMemstoreSize();
       }
       assertEquals(server.getRegionServerAccounting().getGlobalMemstoreSize(),
         globalMemStoreSize);
@@ -104,7 +105,7 @@ public class TestGlobalMemStoreSize {
 
       for (HRegionInfo regionInfo :
           ProtobufUtil.getOnlineRegions(server.getRSRpcServices())) {
-        HRegion r = server.getFromOnlineRegions(regionInfo.getEncodedName());
+        Region r = server.getFromOnlineRegions(regionInfo.getEncodedName());
         flush(r, server);
       }
       LOG.info("Post flush on " + server.getServerName());
@@ -120,14 +121,14 @@ public class TestGlobalMemStoreSize {
         // our test was running....
         for (HRegionInfo regionInfo :
             ProtobufUtil.getOnlineRegions(server.getRSRpcServices())) {
-          HRegion r = server.getFromOnlineRegions(regionInfo.getEncodedName());
-          long l = r.getMemstoreSize().longValue();
+          Region r = server.getFromOnlineRegions(regionInfo.getEncodedName());
+          long l = r.getMemstoreSize();
           if (l > 0) {
             // Only meta could have edits at this stage.  Give it another flush
             // clear them.
             assertTrue(regionInfo.isMetaRegion());
             LOG.info(r.toString() + " " + l + ", reflushing");
-            r.flushcache();
+            r.flush(true);
           }
         }
       }
@@ -145,10 +146,10 @@ public class TestGlobalMemStoreSize {
    * @param server
    * @throws IOException
    */
-  private void flush(final HRegion r, final HRegionServer server)
+  private void flush(final Region r, final HRegionServer server)
   throws IOException {
     LOG.info("Flush " + r.toString() + " on " + server.getServerName() +
-      ", " +  r.flushcache() + ", size=" +
+      ", " +  r.flush(true) + ", size=" +
       server.getRegionServerAccounting().getGlobalMemstoreSize());
   }
 

@@ -26,6 +26,7 @@ import java.util.List;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
@@ -37,7 +38,7 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 /**
- * Test {@link HFileScanner#reseekTo(byte[])}
+ * Test {@link HFileScanner#reseekTo(org.apache.hadoop.hbase.Cell)}
  */
 @Category({IOTests.class, SmallTests.class})
 public class TestReseekTo {
@@ -64,7 +65,7 @@ public class TestReseekTo {
             .withOutputStream(fout)
             .withFileContext(context)
             // NOTE: This test is dependent on this deprecated nonstandard comparator
-            .withComparator(KeyValue.COMPARATOR)
+            .withComparator(CellComparator.COMPARATOR)
             .create();
     int numberOfKeys = 1000;
 

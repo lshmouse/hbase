@@ -51,6 +51,7 @@ public class JVM {
   private static final boolean linux =
     System.getProperty("os.name").startsWith("Linux");
   private static final String JVMVersion = System.getProperty("java.version");
+  private static final boolean amd64 = System.getProperty("os.arch").contains("amd64");
 
   /**
    * Constructor. Get the running Operating System instance
@@ -69,6 +70,23 @@ public class JVM {
       return false;
     }
     return (ibmvendor ? linux : true);
+  }
+
+  /**
+   * Check if the OS is linux.
+   *
+   * @return whether this is linux or not.
+   */
+  public static boolean isLinux() {
+    return linux;
+  }
+
+  /**
+   * Check if the arch is amd64;
+   * @return whether this is amd64 or not.
+   */
+  public static boolean isAmd64() {
+    return amd64;
   }
   
   /**

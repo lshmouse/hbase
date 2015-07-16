@@ -42,6 +42,8 @@ public interface MetricsHBaseServerSource extends BaseSource {
   String QUEUE_CALL_TIME_DESC = "Queue Call Time.";
   String PROCESS_CALL_TIME_NAME = "processCallTime";
   String PROCESS_CALL_TIME_DESC = "Processing call time.";
+  String TOTAL_CALL_TIME_NAME = "totalCallTime";
+  String TOTAL_CALL_TIME_DESC = "Total call time, including both queued and processing time.";
   String QUEUE_SIZE_NAME = "queueSize";
   String QUEUE_SIZE_DESC = "Number of bytes in the call queues.";
   String GENERAL_QUEUE_NAME = "numCallsInGeneralQueue";
@@ -56,6 +58,16 @@ public interface MetricsHBaseServerSource extends BaseSource {
   String NUM_ACTIVE_HANDLER_NAME = "numActiveHandler";
   String NUM_ACTIVE_HANDLER_DESC = "Number of active rpc handlers.";
 
+  String EXCEPTIONS_NAME="exceptions";
+  String EXCEPTIONS_DESC="Exceptions caused by requests";
+  String EXCEPTIONS_TYPE_DESC="Number of requests that resulted in the specified type of Exception";
+  String EXCEPTIONS_OOO_NAME="exceptions.OutOfOrderScannerNextException";
+  String EXCEPTIONS_BUSY_NAME="exceptions.RegionTooBusyException";
+  String EXCEPTIONS_UNKNOWN_NAME="exceptions.UnknownScannerException";
+  String EXCEPTIONS_SANITY_NAME="exceptions.FailedSanityCheckException";
+  String EXCEPTIONS_MOVED_NAME="exceptions.RegionMovedException";
+  String EXCEPTIONS_NSRE_NAME="exceptions.NotServingRegionException";
+
   void authorizationSuccess();
 
   void authorizationFailure();
@@ -64,6 +76,18 @@ public interface MetricsHBaseServerSource extends BaseSource {
 
   void authenticationFailure();
 
+  void exception();
+
+  /**
+   * Different types of exceptions
+   */
+  void outOfOrderException();
+  void failedSanityException();
+  void movedRegionException();
+  void notServingRegionException();
+  void unknownScannerException();
+  void tooBusyException();
+
   void sentBytes(long count);
 
   void receivedBytes(int count);
@@ -71,4 +95,6 @@ public interface MetricsHBaseServerSource extends BaseSource {
   void dequeuedCall(int qTime);
 
   void processedCall(int processingTime);
-}
+
+  void queuedAndProcessedCall(int totalTime);
+  }

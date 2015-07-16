@@ -24,13 +24,16 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 
 import junit.framework.TestCase;
 
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
+import org.apache.hadoop.io.WritableUtils;
 import org.junit.Assert;
 import org.junit.experimental.categories.Category;
 
@@ -46,6 +49,19 @@ public class TestBytes extends TestCase {
       ee = e;
     }
     assertNotNull(ee);
+  }
+
+  public void testAdd () throws Exception {
+    byte[] a = {0,0,0,0,0,0,0,0,0,0};
+    byte[] b = {1,1,1,1,1,1,1,1,1,1,1};
+    byte[] c = {2,2,2,2,2,2,2,2,2,2,2,2};
+    byte[] d = {3,3,3,3,3,3,3,3,3,3,3,3,3};
+    byte[] result1 = Bytes.add (a, b, c);
+    byte[] result2 = Bytes.add (new byte[][] {a, b, c});
+    assertEquals(0, Bytes.compareTo(result1, result2));
+    byte[] result4 = Bytes.add (result1, d);
+    byte[] result5 = Bytes.add (new byte[][] {result1, d});
+    assertEquals(0, Bytes.compareTo(result1, result2));
   }
 
   public void testSplit() throws Exception {
@@ -213,6 +229,19 @@ public class TestBytes extends TestCase {
     assertEquals(7, target.limit());
   }
 
+  public void testReadAsVLong() throws Exception {
+    long [] longs = {-1l, 123l, Long.MIN_VALUE, Long.MAX_VALUE};
+    for (int i = 0; i < longs.length; i++) {
+      ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      DataOutputStream output = new DataOutputStream(baos);
+      WritableUtils.writeVLong(output, longs[i]);
+      byte[] long_bytes_no_offset = baos.toByteArray();
+      assertEquals(longs[i], Bytes.readAsVLong(long_bytes_no_offset, 0));
+      byte[] long_bytes_with_offset = bytesWithOffset(long_bytes_no_offset);
+      assertEquals(longs[i], Bytes.readAsVLong(long_bytes_with_offset, 1));
+    }
+  }
+
   public void testToStringBinaryForBytes() {
     byte[] array = { '0', '9', 'a', 'z', 'A', 'Z', '@', 1 };
     String actual = Bytes.toStringBinary(array);
@@ -258,33 +287,25 @@ public class TestBytes extends TestCase {
     byte [] key4 = {0};
     byte [] key5 = {2};
 
-    assertEquals(1, Bytes.binarySearch(arr, key1, 0, 1,
-      Bytes.BYTES_RAWCOMPARATOR));
-    assertEquals(0, Bytes.binarySearch(arr, key1, 1, 1,
-      Bytes.BYTES_RAWCOMPARATOR));
+    assertEquals(1, Bytes.binarySearch(arr, key1, 0, 1));
+    assertEquals(0, Bytes.binarySearch(arr, key1, 1, 1));
     assertEquals(-(2+1), Arrays.binarySearch(arr, key2_2,
       Bytes.BYTES_COMPARATOR));
-    assertEquals(-(2+1), Bytes.binarySearch(arr, key2, 0, 1,
-      Bytes.BYTES_RAWCOMPARATOR));
-    assertEquals(4, Bytes.binarySearch(arr, key2, 1, 1,
-      Bytes.BYTES_RAWCOMPARATOR));
-    assertEquals(2, Bytes.binarySearch(arr, key3, 0, 1,
-      Bytes.BYTES_RAWCOMPARATOR));
-    assertEquals(5, Bytes.binarySearch(arr, key3, 1, 1,
-      Bytes.BYTES_RAWCOMPARATOR));
+    assertEquals(-(2+1), Bytes.binarySearch(arr, key2, 0, 1));
+    assertEquals(4, Bytes.binarySearch(arr, key2, 1, 1));
+    assertEquals(2, Bytes.binarySearch(arr, key3, 0, 1));
+    assertEquals(5, Bytes.binarySearch(arr, key3, 1, 1));
     assertEquals(-1,
-      Bytes.binarySearch(arr, key4, 0, 1, Bytes.BYTES_RAWCOMPARATOR));
+      Bytes.binarySearch(arr, key4, 0, 1));
     assertEquals(-2,
-      Bytes.binarySearch(arr, key5, 0, 1, Bytes.BYTES_RAWCOMPARATOR));
+      Bytes.binarySearch(arr, key5, 0, 1));
 
     // Search for values to the left and to the right of each item in the array.
     for (int i = 0; i < arr.length; ++i) {
       assertEquals(-(i + 1), Bytes.binarySearch(arr,
-          new byte[] { (byte) (arr[i][0] - 1) }, 0, 1,
-          Bytes.BYTES_RAWCOMPARATOR));
+          new byte[] { (byte) (arr[i][0] - 1) }, 0, 1));
       assertEquals(-(i + 2), Bytes.binarySearch(arr,
-          new byte[] { (byte) (arr[i][0] + 1) }, 0, 1,
-          Bytes.BYTES_RAWCOMPARATOR));
+          new byte[] { (byte) (arr[i][0] + 1) }, 0, 1));
     }
   }
 
@@ -473,6 +494,52 @@ public class TestBytes extends TestCase {
     }
     for (byte i = 0; i < 100; i++) {
       Assert.assertEquals(i, b[i]);
+    }
+  }
+  
+  public void testToFromHex() {
+    List<String> testStrings = new ArrayList<String>();
+    testStrings.addAll(Arrays.asList(new String[] {
+        "",
+        "00",
+        "A0",
+        "ff",
+        "FFffFFFFFFFFFF",
+        "12",
+        "0123456789abcdef",
+        "283462839463924623984692834692346ABCDFEDDCA0",
+      }));
+    for (String testString : testStrings)
+    {
+      byte[] byteData = Bytes.fromHex(testString);
+      Assert.assertEquals(testString.length() / 2, byteData.length);
+      String result = Bytes.toHex(byteData);
+      Assert.assertTrue(testString.equalsIgnoreCase(result));
+    }
+    
+    List<byte[]> testByteData = new ArrayList<byte[]>();
+    testByteData.addAll(Arrays.asList(new byte[][] {
+      new byte[0],
+      new byte[1],
+      new byte[10],
+      new byte[] {1, 2, 3, 4, 5},
+      new byte[] {(byte) 0xFF},
+    }));
+    Random r = new Random();
+    for (int i = 0; i < 20; i++)
+    {
+      
+      byte[] bytes = new byte[r.nextInt(100)];
+      r.nextBytes(bytes);
+      testByteData.add(bytes);
+    }
+    
+    for (byte[] testData : testByteData)
+    {
+      String hexString = Bytes.toHex(testData);
+      Assert.assertEquals(testData.length * 2, hexString.length());
+      byte[] result = Bytes.fromHex(hexString);
+      Assert.assertArrayEquals(testData, result);
     }
   }
 }

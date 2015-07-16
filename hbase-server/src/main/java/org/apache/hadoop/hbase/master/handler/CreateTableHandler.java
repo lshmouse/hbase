@@ -43,7 +43,7 @@ import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.client.TableState;
 import org.apache.hadoop.hbase.executor.EventHandler;
 import org.apache.hadoop.hbase.executor.EventType;
-import org.apache.hadoop.hbase.ipc.RequestContext;
+import org.apache.hadoop.hbase.ipc.RpcServer;
 import org.apache.hadoop.hbase.master.AssignmentManager;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
@@ -70,6 +70,7 @@ public class CreateTableHandler extends EventHandler {
   private final AssignmentManager assignmentManager;
   private final TableLockManager tableLockManager;
   private final HRegionInfo [] newRegions;
+  private final MasterServices masterServices;
   private final TableLock tableLock;
   private User activeUser;
 
@@ -82,6 +83,7 @@ public class CreateTableHandler extends EventHandler {
     this.hTableDescriptor = hTableDescriptor;
     this.conf = conf;
     this.newRegions = newRegions;
+    this.masterServices = masterServices;
     this.assignmentManager = masterServices.getAssignmentManager();
     this.tableLockManager = masterServices.getTableLockManager();
 
@@ -102,9 +104,8 @@ public class CreateTableHandler extends EventHandler {
       // If we are creating the table in service to an RPC request, record the
       // active user for later, so proper permissions will be applied to the
       // new table by the AccessController if it is active
-      if (RequestContext.isInRequestContext()) {
-        this.activeUser = RequestContext.getRequestUser();
-      } else {
+      this.activeUser = RpcServer.getRequestUser();
+      if (this.activeUser == null) {
         this.activeUser = UserProvider.instantiate(conf).getCurrent();
       }
     } catch (InterruptedException e) {
@@ -145,9 +146,9 @@ public class CreateTableHandler extends EventHandler {
   public void process() {
     TableName tableName = this.hTableDescriptor.getTableName();
     LOG.info("Create table " + tableName);
-
+    HMaster master = ((HMaster) this.server);
     try {
-      final MasterCoprocessorHost cpHost = ((HMaster) this.server).getMasterCoprocessorHost();
+      final MasterCoprocessorHost cpHost = master.getMasterCoprocessorHost();
       if (cpHost != null) {
         cpHost.preCreateTableHandler(this.hTableDescriptor, this.newRegions);
       }
@@ -164,7 +165,16 @@ public class CreateTableHandler extends EventHandler {
       }
     } catch (Throwable e) {
       LOG.error("Error trying to create the table " + tableName, e);
+      if (master.isInitialized()) {
+        try {
+          ((HMaster) this.server).getMasterQuotaManager().removeTableFromNamespaceQuota(
+            hTableDescriptor.getTableName());
+        } catch (IOException e1) {
+          LOG.error("Error trying to update namespace quota " + e1);
+        }
+      }
       completed(e);
+      
     }
   }
 
@@ -200,10 +210,11 @@ public class CreateTableHandler extends EventHandler {
     // 1. Create Table Descriptor
     // using a copy of descriptor, table will be created enabling first
     TableDescriptor underConstruction = new TableDescriptor(
-        this.hTableDescriptor, TableState.State.ENABLING);
+        this.hTableDescriptor);
     Path tempTableDir = FSUtils.getTableDir(tempdir, tableName);
-    new FSTableDescriptors(this.conf).createTableDescriptorForTableDirectory(
-      tempTableDir, underConstruction, false);
+    ((FSTableDescriptors)(masterServices.getTableDescriptors()))
+        .createTableDescriptorForTableDirectory(
+        tempTableDir, underConstruction, false);
     Path tableDir = FSUtils.getTableDir(fileSystemManager.getRootDir(), tableName);
 
     // 2. Create Regions
@@ -214,9 +225,15 @@ public class CreateTableHandler extends EventHandler {
         " to hbase root=" + tableDir);
     }
 
+    // populate descriptors cache to be visible in getAll
+    masterServices.getTableDescriptors().get(tableName);
+
+    MetaTableAccessor.updateTableState(this.server.getConnection(), hTableDescriptor.getTableName(),
+        TableState.State.ENABLING);
+
     if (regionInfos != null && regionInfos.size() > 0) {
       // 4. Add regions to META
-      addRegionsToMeta(regionInfos);
+      addRegionsToMeta(regionInfos, hTableDescriptor.getRegionReplication());
       // 5. Add replicas if needed
       regionInfos = addReplicas(hTableDescriptor, regionInfos);
 
@@ -287,8 +304,8 @@ public class CreateTableHandler extends EventHandler {
   /**
    * Add the specified set of regions to the hbase:meta table.
    */
-  protected void addRegionsToMeta(final List<HRegionInfo> regionInfos)
+  protected void addRegionsToMeta(final List<HRegionInfo> regionInfos, int regionReplication)
       throws IOException {
-    MetaTableAccessor.addRegionsToMeta(this.server.getConnection(), regionInfos);
+    MetaTableAccessor.addRegionsToMeta(this.server.getConnection(), regionInfos, regionReplication);
   }
 }

@@ -19,14 +19,17 @@
 
 package org.apache.hadoop.hbase.filter;
 
+import java.io.IOException;
 import java.util.ArrayList;
 
+import org.apache.hadoop.hbase.ByteBufferedCell;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.KeyValueUtil;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.util.ByteBufferUtils;
 import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
 
@@ -52,26 +55,31 @@ public class ColumnPrefixFilter extends FilterBase {
   }
 
   @Override
-  public ReturnCode filterKeyValue(Cell kv) {
-    if (this.prefix == null || kv.getQualifierArray() == null) {
+  public boolean filterRowKey(Cell cell) throws IOException {
+    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
+    return false;
+  }
+
+  @Override
+  public ReturnCode filterKeyValue(Cell cell) {
+    if (this.prefix == null) {
       return ReturnCode.INCLUDE;
     } else {
-      return filterColumn(kv.getQualifierArray(), kv.getQualifierOffset(), kv.getQualifierLength());
+      return filterColumn(cell);
     }
   }
 
-  public ReturnCode filterColumn(byte[] buffer, int qualifierOffset, int qualifierLength) {
+  public ReturnCode filterColumn(Cell cell) {
+    int qualifierLength = cell.getQualifierLength();
     if (qualifierLength < prefix.length) {
-      int cmp = Bytes.compareTo(buffer, qualifierOffset, qualifierLength, this.prefix, 0,
-          qualifierLength);
+      int cmp = compareQualifierPart(cell, qualifierLength, this.prefix);
       if (cmp <= 0) {
         return ReturnCode.SEEK_NEXT_USING_HINT;
       } else {
         return ReturnCode.NEXT_ROW;
       }
     } else {
-      int cmp = Bytes.compareTo(buffer, qualifierOffset, this.prefix.length, this.prefix, 0,
-          this.prefix.length);
+      int cmp = compareQualifierPart(cell, this.prefix.length, this.prefix);
       if (cmp < 0) {
         return ReturnCode.SEEK_NEXT_USING_HINT;
       } else if (cmp > 0) {
@@ -80,6 +88,15 @@ public class ColumnPrefixFilter extends FilterBase {
         return ReturnCode.INCLUDE;
       }
     }
+  }
+
+  private static int compareQualifierPart(Cell cell, int length, byte[] prefix) {
+    if (cell instanceof ByteBufferedCell) {
+      return ByteBufferUtils.compareTo(((ByteBufferedCell) cell).getQualifierByteBuffer(),
+          ((ByteBufferedCell) cell).getQualifierPositionInByteBuffer(), length, prefix, 0, length);
+    }
+    return Bytes.compareTo(cell.getQualifierArray(), cell.getQualifierOffset(), length, prefix, 0,
+        length);
   }
 
   public static Filter createFilterFromArguments(ArrayList<byte []> filterArguments) {
@@ -131,9 +148,7 @@ public class ColumnPrefixFilter extends FilterBase {
 
   @Override
   public Cell getNextCellHint(Cell cell) {
-    return KeyValueUtil.createFirstOnRow(
-        cell.getRowArray(), cell.getRowOffset(), cell.getRowLength(), cell.getFamilyArray(),
-        cell.getFamilyOffset(), cell.getFamilyLength(), prefix, 0, prefix.length);
+    return CellUtil.createFirstOnRowCol(cell, prefix, 0, prefix.length);
   }
 
   @Override

@@ -35,6 +35,7 @@ import org.apache.hadoop.hbase.Waiter.Predicate;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.testclassification.CoprocessorTests;
@@ -52,7 +53,8 @@ import org.junit.experimental.categories.Category;
  */
 @Category({CoprocessorTests.class, MediumTests.class})
 public class TestRegionServerCoprocessorExceptionWithAbort {
-  static final Log LOG = LogFactory.getLog(TestRegionServerCoprocessorExceptionWithAbort.class);
+  private static final Log LOG = LogFactory.getLog(
+    TestRegionServerCoprocessorExceptionWithAbort.class);
   private static final HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
   private static final TableName TABLE_NAME = TableName.valueOf("observed_table");
 
@@ -97,7 +99,7 @@ public class TestRegionServerCoprocessorExceptionWithAbort {
       // hosts the region we attempted to write to) to abort.
       final byte[] TEST_FAMILY = Bytes.toBytes("aaa");
 
-      HTable table = TEST_UTIL.createMultiRegionTable(TABLE_NAME, TEST_FAMILY);
+      Table table = TEST_UTIL.createMultiRegionTable(TABLE_NAME, TEST_FAMILY);
       TEST_UTIL.waitUntilAllRegionsAssigned(TABLE_NAME);
 
       // Note which regionServer will abort (after put is attempted).
@@ -108,7 +110,6 @@ public class TestRegionServerCoprocessorExceptionWithAbort {
         Put put = new Put(ROW);
         put.add(TEST_FAMILY, ROW, ROW);
         table.put(put);
-        table.flushCommits();
       } catch (IOException e) {
         // The region server is going to be aborted.
         // We may get an exception if we retry,

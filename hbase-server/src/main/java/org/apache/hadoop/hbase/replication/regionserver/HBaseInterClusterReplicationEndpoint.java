@@ -30,8 +30,8 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableNotFoundException;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.HConnection;
-import org.apache.hadoop.hbase.client.HConnectionManager;
 import org.apache.hadoop.hbase.protobuf.ReplicationProtbufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.AdminService.BlockingInterface;
 import org.apache.hadoop.hbase.wal.WAL.Entry;
@@ -46,9 +46,10 @@ import org.apache.hadoop.ipc.RemoteException;
  * For the slave cluster it selects a random number of peers
  * using a replication ratio. For example, if replication ration = 0.1
  * and slave cluster has 100 region servers, 10 will be selected.
- * <p/>
+ * <p>
  * A stream is considered down when we cannot contact a region server on the
  * peer cluster for more than 55 seconds by default.
+ * </p>
  */
 @InterfaceAudience.Private
 public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoint {
@@ -76,13 +77,13 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
     super.init(context);
     this.conf = HBaseConfiguration.create(ctx.getConfiguration());
     decorateConf();
-    this.maxRetriesMultiplier = this.conf.getInt("replication.source.maxretriesmultiplier", 10);
+    this.maxRetriesMultiplier = this.conf.getInt("replication.source.maxretriesmultiplier", 300);
     this.socketTimeoutMultiplier = this.conf.getInt("replication.source.socketTimeoutMultiplier",
-        maxRetriesMultiplier * maxRetriesMultiplier);
+        maxRetriesMultiplier);
     // TODO: This connection is replication specific or we should make it particular to
     // replication and make replication specific settings such as compression or codec to use
     // passing Cells.
-    this.conn = HConnectionManager.createConnection(this.conf);
+    this.conn = (HConnection) ConnectionFactory.createConnection(this.conf);
     this.sleepForRetries =
         this.conf.getLong("replication.source.sleepforretries", 1000);
     this.metrics = context.getMetrics();
@@ -163,6 +164,7 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
 
         // update metrics
         this.metrics.setAgeOfLastShippedOp(entries.get(entries.size()-1).getKey().getWriteTime());
+        replicationSinkMgr.reportSinkSuccess(sinkPeer);
         return true;
 
       } catch (IOException ioe) {

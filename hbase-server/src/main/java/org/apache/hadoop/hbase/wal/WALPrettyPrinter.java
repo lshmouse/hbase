@@ -33,8 +33,6 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
-import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -43,12 +41,13 @@ import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.Tag;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
+import org.apache.hadoop.hbase.regionserver.wal.ProtobufLogReader;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.codehaus.jackson.map.ObjectMapper;
-
-// imports for things that haven't moved yet.
-import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 
 /**
  * WALPrettyPrinter prints the contents of a given WAL with a variety of
@@ -75,7 +74,7 @@ public class WALPrettyPrinter {
   // enable in order to output a single list of transactions from several files
   private boolean persistentOutput;
   private boolean firstTxn;
-  // useful for programatic capture of JSON output
+  // useful for programmatic capture of JSON output
   private PrintStream out;
   // for JSON encoding
   private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -242,11 +241,33 @@ public class WALPrettyPrinter {
     if (!fs.isFile(p)) {
       throw new IOException(p + " is not a file");
     }
+
+    WAL.Reader log = WALFactory.createReader(fs, p, conf);
+
+    if (log instanceof ProtobufLogReader) {
+      List<String> writerClsNames = ((ProtobufLogReader) log).getWriterClsNames();
+      if (writerClsNames != null && writerClsNames.size() > 0) {
+        out.print("Writer Classes: ");
+        for (int i = 0; i < writerClsNames.size(); i++) {
+          out.print(writerClsNames.get(i));
+          if (i != writerClsNames.size() - 1) {
+            out.print(" ");
+          }
+        }
+        out.println();
+      }
+
+      String cellCodecClsName = ((ProtobufLogReader) log).getCodecClsName();
+      if (cellCodecClsName != null) {
+        out.println("Cell Codec Class: " + cellCodecClsName);
+      }
+    }
+
     if (outputJSON && !persistentOutput) {
       out.print("[");
       firstTxn = true;
     }
-    WAL.Reader log = WALFactory.createReader(fs, p, conf);
+
     try {
       WAL.Entry entry;
       while ((entry = log.next()) != null) {
@@ -265,10 +286,11 @@ public class WALPrettyPrinter {
         for (Cell cell : edit.getCells()) {
           // add atomic operation to txn
           Map<String, Object> op = new HashMap<String, Object>(toStringMap(cell));
-          if (outputValues) op.put("value", Bytes.toStringBinary(cell.getValue()));
+          if (outputValues) op.put("value", Bytes.toStringBinary(CellUtil.cloneValue(cell)));
           // check row output filter
-          if (row == null || ((String) op.get("row")).equals(row))
+          if (row == null || ((String) op.get("row")).equals(row)) {
             actions.add(op);
+          }
         }
         if (actions.size() == 0)
           continue;
@@ -283,22 +305,16 @@ public class WALPrettyPrinter {
           out.print(MAPPER.writeValueAsString(txn));
         } else {
           // Pretty output, complete with indentation by atomic action
-          out.println("Sequence " + txn.get("sequence") + " "
-              + "from region " + txn.get("region") + " " + "in table "
-              + txn.get("table") + " at write timestamp: " + new Date(writeTime));
+          out.println("Sequence=" + txn.get("sequence") + " "
+              + ", region=" + txn.get("region") + " at write timestamp=" + new Date(writeTime));
           for (int i = 0; i < actions.size(); i++) {
             Map op = actions.get(i);
-            out.println("  Action:");
-            out.println("    row: " + op.get("row"));
-            out.println("    column: " + op.get("family") + ":"
-                + op.get("qualifier"));
-            out.println("    timestamp: "
-                + (new Date((Long) op.get("timestamp"))));
-            if(op.get("tag") != null) {
+            out.println("row=" + op.get("row") +
+                ", column=" + op.get("family") + ":" + op.get("qualifier"));
+            if (op.get("tag") != null) {
               out.println("    tag: " + op.get("tag"));
             }
-            if (outputValues)
-              out.println("    value: " + op.get("value"));
+            if (outputValues) out.println("    value: " + op.get("value"));
           }
         }
       }
@@ -347,8 +363,6 @@ public class WALPrettyPrinter {
    *          Command line arguments
    * @throws IOException
    *           Thrown upon file system errors etc.
-   * @throws ParseException
-   *           Thrown if command-line parsing fails.
    */
   public static void run(String[] args) throws IOException {
     // create options
@@ -357,14 +371,14 @@ public class WALPrettyPrinter {
     options.addOption("j", "json", false, "Output JSON");
     options.addOption("p", "printvals", false, "Print values");
     options.addOption("r", "region", true,
-        "Region to filter by. Pass region name; e.g. 'hbase:meta,,1'");
+        "Region to filter by. Pass encoded region name; e.g. '9192caead6a5a20acb4454ffbc79fa14'");
     options.addOption("s", "sequence", true,
         "Sequence to filter by. Pass sequence number.");
     options.addOption("w", "row", true, "Row to filter by. Pass row name.");
 
     WALPrettyPrinter printer = new WALPrettyPrinter();
     CommandLineParser parser = new PosixParser();
-    List files = null;
+    List<?> files = null;
     try {
       CommandLine cmd = parser.parse(options, args);
       files = cmd.getArgList();

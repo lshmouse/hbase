@@ -605,21 +605,7 @@ Instructs HBase to make use of ZooKeeper's multi-update functionality.
 .Default
 `true`
 
-  
-[[hbase.config.read.zookeeper.config]]
-*`hbase.config.read.zookeeper.config`*::
-+
-.Description
 
-        Set to true to allow HBaseConfiguration to read the
-        zoo.cfg file for ZooKeeper properties. Switching this to true
-        is not recommended, since the functionality of reading ZK
-        properties from a zoo.cfg file has been deprecated.
-+
-.Default
-`false`
-
-  
 [[hbase.zookeeper.property.initLimit]]
 *`hbase.zookeeper.property.initLimit`*::
 +
@@ -1284,11 +1270,11 @@ Whether or not the bucketcache is used in league with the LRU
 *`hbase.bucketcache.size`*::
 +
 .Description
-The size of the buckets for the bucketcache if you only use a single size. 
-      Defaults to the default blocksize, which is 64 * 1024.
+Used along with bucket cache, this is a float that EITHER represents a percentage of total heap
+   memory size to give to the cache (if < 1.0) OR, it is the capacity in megabytes of the cache.
 +
 .Default
-`65536`
+`0` when specified as a float
 
   
 [[hbase.bucketcache.sizes]]
@@ -2251,4 +2237,3 @@ The percent of region server RPC threads failed to abort RS.
 .Default
 `0.5`
 
-  

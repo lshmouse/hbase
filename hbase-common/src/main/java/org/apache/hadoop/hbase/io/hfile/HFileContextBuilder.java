@@ -31,7 +31,6 @@ import org.apache.hadoop.hbase.util.ChecksumType;
 public class HFileContextBuilder {
 
   public static final int DEFAULT_BYTES_PER_CHECKSUM = 16 * 1024;
-  public static final ChecksumType DEFAULT_CHECKSUM_TYPE = ChecksumType.CRC32;
 
   /** Whether checksum is enabled or not **/
   private boolean usesHBaseChecksum = true;
@@ -44,7 +43,7 @@ public class HFileContextBuilder {
   /** Whether tags to be compressed or not **/
   private boolean compressTags = false;
   /** the checksum type **/
-  private ChecksumType checksumType = DEFAULT_CHECKSUM_TYPE;
+  private ChecksumType checksumType = ChecksumType.getDefaultChecksumType();
   /** the number of bytes per checksum value **/
   private int bytesPerChecksum = DEFAULT_BYTES_PER_CHECKSUM;
   /** Number of uncompressed bytes we allow per block. */
@@ -52,6 +51,7 @@ public class HFileContextBuilder {
   private DataBlockEncoding encoding = DataBlockEncoding.NONE;
   /** Crypto context */
   private Encryption.Context cryptoContext = Encryption.Context.NONE;
+  private long fileCreateTime = 0;
 
   public HFileContextBuilder withHBaseCheckSum(boolean useHBaseCheckSum) {
     this.usesHBaseChecksum = useHBaseCheckSum;
@@ -103,8 +103,14 @@ public class HFileContextBuilder {
     return this;
   }
 
+  public HFileContextBuilder withCreateTime(long fileCreateTime) {
+    this.fileCreateTime = fileCreateTime;
+    return this;
+  }
+
   public HFileContext build() {
     return new HFileContext(usesHBaseChecksum, includesMvcc, includesTags, compression,
-      compressTags, checksumType, bytesPerChecksum, blocksize, encoding, cryptoContext);
+        compressTags, checksumType, bytesPerChecksum, blocksize, encoding, cryptoContext,
+        fileCreateTime);
   }
 }

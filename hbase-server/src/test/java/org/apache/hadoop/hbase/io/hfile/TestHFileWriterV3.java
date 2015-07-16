@@ -38,10 +38,11 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.KeyValue.KVComparator;
 import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.compress.Compression.Algorithm;
@@ -60,8 +61,7 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
 /**
- * Testing writing a version 3 {@link HFile}. This is a low-level test written
- * during the development of {@link HFileWriterV3}.
+ * Testing writing a version 3 {@link HFile}.
  */
 @RunWith(Parameterized.class)
 @Category({IOTests.class, SmallTests.class})
@@ -120,11 +120,10 @@ public class TestHFileWriterV3 {
                            .withBlockSize(4096)
                            .withIncludesTags(useTags)
                            .withCompression(compressAlgo).build();
-    HFileWriterV3 writer = (HFileWriterV3)
-        new HFileWriterV3.WriterFactoryV3(conf, new CacheConfig(conf))
+    HFile.Writer writer = new HFileWriterFactory(conf, new CacheConfig(conf))
             .withPath(fs, hfilePath)
             .withFileContext(context)
-            .withComparator(KeyValue.COMPARATOR)
+            .withComparator(CellComparator.COMPARATOR)
             .create();
 
     Random rand = new Random(9713312); // Just a fixed seed.
@@ -160,7 +159,7 @@ public class TestHFileWriterV3 {
     writer.appendMetaBlock("CAPITAL_OF_FRANCE", new Text("Paris"));
 
     writer.close();
-    
+
 
     FSDataInputStream fsdis = fs.open(hfilePath);
 
@@ -178,13 +177,12 @@ public class TestHFileWriterV3 {
     HFileBlock.FSReader blockReader =
         new HFileBlock.FSReaderImpl(fsdis, fileSize, meta);
  // Comparator class name is stored in the trailer in version 2.
-    KVComparator comparator = trailer.createComparator();
+    CellComparator comparator = trailer.createComparator();
     HFileBlockIndex.BlockIndexReader dataBlockIndexReader =
-        new HFileBlockIndex.BlockIndexReader(comparator,
+        new HFileBlockIndex.CellBasedKeyBlockIndexReader(comparator,
             trailer.getNumDataIndexLevels());
     HFileBlockIndex.BlockIndexReader metaBlockIndexReader =
-        new HFileBlockIndex.BlockIndexReader(
-            KeyValue.RAW_COMPARATOR, 1);
+        new HFileBlockIndex.ByteArrayKeyBlockIndexReader(1);
 
     HFileBlock.BlockIterator blockIter = blockReader.blockRange(
         trailer.getLoadOnOpenDataOffset(),
@@ -193,12 +191,12 @@ public class TestHFileWriterV3 {
     // the root level.
     dataBlockIndexReader.readMultiLevelIndexRoot(
         blockIter.nextBlockWithBlockType(BlockType.ROOT_INDEX), trailer.getDataIndexCount());
-    
+
     if (findMidKey) {
-      byte[] midkey = dataBlockIndexReader.midkey();
+      Cell midkey = dataBlockIndexReader.midkey();
       assertNotNull("Midkey should not be null", midkey);
     }
-    
+
     // Meta index.
     metaBlockIndexReader.readRootIndex(
         blockIter.nextBlockWithBlockType(BlockType.ROOT_INDEX)
@@ -206,8 +204,7 @@ public class TestHFileWriterV3 {
     // File info
     FileInfo fileInfo = new FileInfo();
     fileInfo.read(blockIter.nextBlockWithBlockType(BlockType.FILE_INFO).getByteStream());
-    byte [] keyValueFormatVersion = fileInfo.get(
-        HFileWriterV3.KEY_VALUE_VERSION);
+    byte [] keyValueFormatVersion = fileInfo.get(HFileWriterImpl.KEY_VALUE_VERSION);
     boolean includeMemstoreTS = keyValueFormatVersion != null &&
         Bytes.toInt(keyValueFormatVersion) > 0;
 
@@ -242,7 +239,7 @@ public class TestHFileWriterV3 {
           tagValue = new byte[tagLen];
           buf.get(tagValue);
         }
-      
+
         if (includeMemstoreTS) {
           ByteArrayInputStream byte_input = new ByteArrayInputStream(buf.array(), buf.arrayOffset()
               + buf.position(), buf.remaining());
@@ -253,11 +250,13 @@ public class TestHFileWriterV3 {
         }
 
         // A brute-force check to see that all keys and values are correct.
-        assertTrue(Bytes.compareTo(key, keyValues.get(entriesRead).getKey()) == 0);
-        assertTrue(Bytes.compareTo(value, keyValues.get(entriesRead).getValue()) == 0);
+        KeyValue kv = keyValues.get(entriesRead);
+        assertTrue(Bytes.compareTo(key, kv.getKey()) == 0);
+        assertTrue(Bytes.compareTo(value, 0, value.length, kv.getValueArray(), kv.getValueOffset(),
+          kv.getValueLength()) == 0);
         if (useTags) {
           assertNotNull(tagValue);
-          KeyValue tkv =  keyValues.get(entriesRead);
+          KeyValue tkv =  kv;
           assertEquals(tagValue.length, tkv.getTagsLength());
           assertTrue(Bytes.compareTo(tagValue, 0, tagValue.length, tkv.getTagsArray(),
               tkv.getTagsOffset(), tkv.getTagsLength()) == 0);

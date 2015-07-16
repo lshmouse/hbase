@@ -70,7 +70,9 @@ public class TestHFileEncryption {
     fs = FileSystem.get(conf);
 
     cryptoContext = Encryption.newContext(conf);
-    Cipher aes = Encryption.getCipher(conf, "AES");
+    String algorithm =
+        conf.get(HConstants.CRYPTO_KEY_ALGORITHM_CONF_KEY, HConstants.CIPHER_AES);
+    Cipher aes = Encryption.getCipher(conf, algorithm);
     assertNotNull(aes);
     cryptoContext.setCipher(aes);
     byte[] key = new byte[aes.getKeyLength()];
@@ -223,7 +225,7 @@ public class TestHFileEncryption {
         assertTrue("Initial seekTo failed", scanner.seekTo());
         int i = 0;
         do {
-          Cell kv = scanner.getKeyValue();
+          Cell kv = scanner.getCell();
           assertTrue("Read back an unexpected or invalid KV",
               testKvs.contains(KeyValueUtil.ensureKeyValue(kv)));
           i++;

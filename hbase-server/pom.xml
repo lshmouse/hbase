@@ -54,20 +54,6 @@
     </testResources>
     <plugins>
       <plugin>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <executions>
-          <execution>
-            <id>default-compile</id>
-            <configuration>
-              <compilerId>${java.default.compiler}</compilerId>
-              <forceJavacCompilerUse>true</forceJavacCompilerUse>
-            </configuration>
-          </execution>
-          <!-- We can't check tests with default-testCompile because of generated
-            protobuf code (IncrementCounterProcessorTestProtos) -->
-       </executions>
-      </plugin>
-      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-site-plugin</artifactId>
         <configuration>
@@ -105,7 +91,6 @@
             <exclude>log4j.properties</exclude>
             <exclude>mapred-queues.xml</exclude>
             <exclude>mapred-site.xml</exclude>
-            <exclude>zoo.cfg</exclude>
           </excludes>
         </configuration>
       </plugin>
@@ -234,9 +219,9 @@
     <!-- General Resources -->
     <pluginManagement>
        <plugins>
-          <!--This plugin's configuration is used to store Eclipse m2e settings only. It has no
-          influence on the Maven build itself and needs to be kept in plugin management, not in
-          the actual plugins. -->
+         <!--This plugin's configuration is used to store Eclipse m2e settings
+             only. It has no influence on the Maven build itself and needs to
+             be kept in plugin management, not in the actual plugins. -->
         <plugin>
           <groupId>org.eclipse.m2e</groupId>
           <artifactId>lifecycle-mapping</artifactId>
@@ -276,6 +261,32 @@
                     </execute>
                   </action>
                 </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <versionRange>[2.8,)</versionRange>
+                    <goals>
+                      <goal>build-classpath</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <versionRange>[3.2,)</versionRange>
+                    <goals>
+                      <goal>compile</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
               </pluginExecutions>
             </lifecycleMappingMetadata>
           </configuration>
@@ -304,6 +315,10 @@
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
+      <artifactId>hbase-procedure</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-client</artifactId>
     </dependency>
     <dependency>
@@ -320,6 +335,12 @@
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-annotations</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hbase</groupId>
+      <artifactId>hbase-procedure</artifactId>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
@@ -464,6 +485,11 @@
       <groupId>io.netty</groupId>
       <artifactId>netty-all</artifactId>
     </dependency>
+    <dependency>
+      <groupId>net.spy</groupId>
+      <artifactId>spymemcached</artifactId>
+      <optional>true</optional>
+    </dependency>
     <!-- tracing Dependencies -->
     <dependency>
       <groupId>org.apache.htrace</groupId>
@@ -477,6 +503,16 @@
     <dependency>
       <groupId>org.hamcrest</groupId>
       <artifactId>hamcrest-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-minikdc</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk16</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -641,7 +677,7 @@
         <dependency>
           <groupId>io.netty</groupId>
           <artifactId>netty</artifactId>
-          <version>3.6.2.Final</version>
+          <version>${netty.hadoop.version}</version>
           <scope>test</scope>
         </dependency>
       </dependencies>
@@ -754,6 +790,7 @@
                       <include>ColumnAggregationProtocol.proto</include>
                       <include>IncrementCounterProcessor.proto</include>
                       <include>PingProtocol.proto</include>
+                      <include>DummyRegionServerEndpoint.proto</include>
                       <include>test.proto</include>
                       <include>test_delayed_rpc.proto</include>
                       <include>test_rpc_service.proto</include>

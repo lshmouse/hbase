@@ -49,7 +49,7 @@ module Hbase
          end
       end
     end
-    
+
     # General help for the table
     # class level so we can call it from anywhere
     def self.help
@@ -103,7 +103,7 @@ Note that after dropping a table, your reference to it becomes useless and furth
 is undefined (and not recommended).
 EOF
       end
-    
+
     #---------------------------------------------------------------------------------------------
 
     # let external objects read the underlying table object
@@ -150,7 +150,7 @@ EOF
           end
         end
         timestamp = nil
-      end  
+      end
       if timestamp
         p.add(family, qualifier, timestamp, value.to_s.to_java_bytes)
       else
@@ -161,14 +161,14 @@ EOF
 
     #----------------------------------------------------------------------------------------------
     # Delete a cell
-    def _delete_internal(row, column, 
+    def _delete_internal(row, column,
     			timestamp = org.apache.hadoop.hbase.HConstants::LATEST_TIMESTAMP, args = {})
       _deleteall_internal(row, column, timestamp, args)
     end
 
     #----------------------------------------------------------------------------------------------
     # Delete a row
-    def _deleteall_internal(row, column = nil, 
+    def _deleteall_internal(row, column = nil,
     		timestamp = org.apache.hadoop.hbase.HConstants::LATEST_TIMESTAMP, args = {})
       # delete operation doesn't need read permission. Retaining the read check for
       # meta table as a part of HBASE-5837.
@@ -185,7 +185,7 @@ EOF
       	  if v.kind_of?(String)
       	  	set_cell_visibility(d, v) if v
       	  end
-      	 end 
+      	 end
       end
       if args.any?
          visibility = args[VISIBILITY]
@@ -219,9 +219,15 @@ EOF
         set_op_ttl(incr, ttl) if ttl
       end
       incr.addColumn(family, qualifier, value)
-      @table.increment(incr)
+      result = @table.increment(incr)
+      return nil if result.isEmpty
+
+      # Fetch cell value
+      cell = result.listCells[0]
+      org.apache.hadoop.hbase.util.Bytes::toLong(cell.getValueArray, 
+        cell.getValueOffset, cell.getValueLength)
     end
-    
+
     #----------------------------------------------------------------------------------------------
     # appends the value atomically
     def _append_internal(row, column, value, args={})
@@ -262,10 +268,11 @@ EOF
         count += 1
         next unless (block_given? && count % interval == 0)
         # Allow command modules to visualize counting process
-        yield(count, 
+        yield(count,
               org.apache.hadoop.hbase.util.Bytes::toStringBinary(row.getRow))
       end
 
+      scanner.close()
       # Return the counter
       return count
     end
@@ -276,7 +283,7 @@ EOF
       get = org.apache.hadoop.hbase.client.Get.new(row.to_s.to_java_bytes)
       maxlength = -1
       @converters.clear()
-      
+
       # Normalize args
       args = args.first if args.first.kind_of?(Hash)
       if args.kind_of?(String) || args.kind_of?(Array)
@@ -365,8 +372,10 @@ EOF
       # Print out results.  Result can be Cell or RowResult.
       res = {}
       result.listCells.each do |c|
-        family = String.from_java_bytes(c.getFamily)
-        qualifier = org.apache.hadoop.hbase.util.Bytes::toStringBinary(c.getQualifier)
+        family = org.apache.hadoop.hbase.util.Bytes::toStringBinary(c.getFamilyArray,
+          c.getFamilyOffset, c.getFamilyLength)
+        qualifier = org.apache.hadoop.hbase.util.Bytes::toStringBinary(c.getQualifierArray,
+          c.getQualifierOffset, c.getQualifierLength)
 
         column = "#{family}:#{qualifier}"
         value = to_string(column, c, maxlength)
@@ -397,11 +406,14 @@ EOF
 
       # Fetch cell value
       cell = result.listCells[0]
-      org.apache.hadoop.hbase.util.Bytes::toLong(cell.getValue)
+      org.apache.hadoop.hbase.util.Bytes::toLong(cell.getValueArray, 
+        cell.getValueOffset, cell.getValueLength)
     end
 
     def _hash_to_scan(args)
       if args.any?
+        enablemetrics = args["ALL_METRICS"].nil? ? false : args["ALL_METRICS"]
+        enablemetrics = enablemetrics || !args["METRICS"].nil?
         filter = args["FILTER"]
         startrow = args["STARTROW"] || ''
         stoprow = args["STOPROW"]
@@ -420,6 +432,7 @@ EOF
         consistency = args[CONSISTENCY]
         # Normalize column names
         columns = [columns] if columns.class == String
+        limit = args["LIMIT"] || -1
         unless columns.kind_of?(Array)
           raise ArgumentError.new("COLUMNS must be specified as a String or an Array")
         end
@@ -433,7 +446,7 @@ EOF
         # This will overwrite any startrow/stoprow settings
         scan.setRowPrefixFilter(rowprefixfilter.to_java_bytes) if rowprefixfilter
 
-        columns.each do |c| 
+        columns.each do |c|
           family, qualifier = parse_column_name(c.to_s)
           if qualifier
             scan.addColumn(family, qualifier)
@@ -448,6 +461,7 @@ EOF
           scan.setFilter(org.apache.hadoop.hbase.filter.ParseFilter.new.parseFilterString(filter))
         end
 
+        scan.setScanMetricsEnabled(enablemetrics) if enablemetrics
         scan.setTimeStamp(timestamp) if timestamp
         scan.setCacheBlocks(cache_blocks)
         scan.setReversed(reversed)
@@ -455,6 +469,7 @@ EOF
         scan.setMaxVersions(versions) if versions > 1
         scan.setTimeRange(timerange[0], timerange[1]) if timerange
         scan.setRaw(raw)
+        scan.setCaching(limit) if limit > 0
         set_attributes(scan, attributes) if attributes
         set_authorizations(scan, authorizations) if authorizations
         scan.setConsistency(org.apache.hadoop.hbase.client.Consistency.valueOf(consistency)) if consistency
@@ -471,10 +486,12 @@ EOF
 
     #----------------------------------------------------------------------------------------------
     # Scans whole table or a range of keys and returns rows matching specific criteria
-    def _scan_internal(args = {})
-      raise(ArgumentError, "Arguments should be a Hash") unless args.kind_of?(Hash)
+    def _scan_internal(args = {}, scan = nil)
+      raise(ArgumentError, "Args should be a Hash") unless args.kind_of?(Hash)
+      raise(ArgumentError, "Scan argument should be org.apache.hadoop.hbase.client.Scan") \
+        unless scan == nil || scan.kind_of?(org.apache.hadoop.hbase.client.Scan)
 
-      limit = args.delete("LIMIT") || -1
+      limit = args["LIMIT"] || -1
       maxlength = args.delete("MAXLENGTH") || -1
       count = 0
       res = {}
@@ -482,21 +499,20 @@ EOF
       @converters.clear()
 
       # Start the scanner
-      scanner = @table.getScanner(_hash_to_scan(args))
+      scan = scan == nil ? _hash_to_scan(args) : scan
+      scanner = @table.getScanner(scan)
       iter = scanner.iterator
 
       # Iterate results
       while iter.hasNext
-        if limit > 0 && count >= limit
-          break
-        end
-
         row = iter.next
         key = org.apache.hadoop.hbase.util.Bytes::toStringBinary(row.getRow)
 
         row.listCells.each do |c|
-          family = String.from_java_bytes(c.getFamily)
-          qualifier = org.apache.hadoop.hbase.util.Bytes::toStringBinary(c.getQualifier)
+          family = org.apache.hadoop.hbase.util.Bytes::toStringBinary(c.getFamilyArray,
+            c.getFamilyOffset, c.getFamilyLength)
+          qualifier = org.apache.hadoop.hbase.util.Bytes::toStringBinary(c.getQualifierArray,
+            c.getQualifierOffset, c.getQualifierLength)
 
           column = "#{family}:#{qualifier}"
           cell = to_string(column, c, maxlength)
@@ -511,8 +527,13 @@ EOF
 
         # One more row processed
         count += 1
+        if limit > 0 && count >= limit
+          # If we reached the limit, exit before the next call to hasNext
+          break
+        end
       end
 
+      scanner.close()
       return ((block_given?) ? count : res)
     end
 
@@ -625,14 +646,17 @@ EOF
     def to_string(column, kv, maxlength = -1)
       if is_meta_table?
         if column == 'info:regioninfo' or column == 'info:splitA' or column == 'info:splitB'
-          hri = org.apache.hadoop.hbase.HRegionInfo.parseFromOrNull(kv.getValue)
+          hri = org.apache.hadoop.hbase.HRegionInfo.parseFromOrNull(kv.getValueArray,
+            kv.getValueOffset, kv.getValueLength)
           return "timestamp=%d, value=%s" % [kv.getTimestamp, hri.toString]
         end
         if column == 'info:serverstartcode'
           if kv.getValue.length > 0
-            str_val = org.apache.hadoop.hbase.util.Bytes.toLong(kv.getValue)
+            str_val = org.apache.hadoop.hbase.util.Bytes.toLong(kv.getValueArray, 
+              kv.getValueOffset, kv.getValueLength)
           else
-            str_val = org.apache.hadoop.hbase.util.Bytes.toStringBinary(kv.getValue)
+            str_val = org.apache.hadoop.hbase.util.Bytes.toStringBinary(kv.getValueArray,
+              kv.getValueOffset, kv.getValueLength)
           end
           return "timestamp=%d, value=%s" % [kv.getTimestamp, str_val]
         end
@@ -645,7 +669,7 @@ EOF
       end
       (maxlength != -1) ? val[0, maxlength] : val
     end
-    
+
     def convert(column, kv)
       #use org.apache.hadoop.hbase.util.Bytes as the default class
       klazz_name = 'org.apache.hadoop.hbase.util.Bytes'
@@ -657,16 +681,16 @@ EOF
         if matches.nil?
           # cannot match the pattern of 'c(className).functionname'
           # use the default klazz_name
-          converter = @converters[column] 
+          converter = @converters[column]
         else
           klazz_name = matches[1]
           converter = matches[2]
         end
       end
       method = eval(klazz_name).method(converter)
-      return method.call(kv.getValue) # apply the converter
+      return method.call(org.apache.hadoop.hbase.CellUtil.cloneValue(kv)) # apply the converter
     end
-    
+
     # if the column spec contains CONVERTER information, to get rid of :CONVERTER info from column pair.
     # 1. return back normal column pair as usual, i.e., "cf:qualifier[:CONVERTER]" to "cf" and "qualifier" only
     # 2. register the CONVERTER information based on column spec - "cf:qualifier"
@@ -677,6 +701,17 @@ EOF
         @converters["#{family}:#{String.from_java_bytes(parts[0])}"] = String.from_java_bytes(parts[1])
         column[1] = parts[0]
       end
+    end
+
+    #----------------------------------------------------------------------------------------------
+    # Get the split points for the table
+    def _get_splits_internal()
+      locator = @table.getRegionLocator()
+      splits = locator.getAllRegionLocations().
+          map{|i| Bytes.toStringBinary(i.getRegionInfo().getStartKey)}.delete_if{|k| k == ""}
+      locator.close()
+      puts("Total number of splits = %s" % [splits.size + 1])
+      return splits
     end
   end
 end

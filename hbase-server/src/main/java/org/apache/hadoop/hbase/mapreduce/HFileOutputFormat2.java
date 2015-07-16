@@ -19,6 +19,7 @@ package org.apache.hadoop.hbase.mapreduce;
 
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
+import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.util.ArrayList;
@@ -37,21 +38,27 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValueUtil;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.fs.HFileSystem;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.compress.Compression.Algorithm;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
-import org.apache.hadoop.hbase.io.hfile.AbstractHFileWriter;
+import org.apache.hadoop.hbase.io.hfile.HFileWriterImpl;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.io.hfile.HFileContext;
@@ -86,7 +93,7 @@ import com.google.common.annotations.VisibleForTesting;
 @InterfaceStability.Evolving
 public class HFileOutputFormat2
     extends FileOutputFormat<ImmutableBytesWritable, Cell> {
-  static Log LOG = LogFactory.getLog(HFileOutputFormat2.class);
+  private static final Log LOG = LogFactory.getLog(HFileOutputFormat2.class);
 
   // The following constants are private since these are used by
   // HFileOutputFormat2 to internally transfer data between job setup and
@@ -107,6 +114,15 @@ public class HFileOutputFormat2
   // override the auto-detection of datablock encoding.
   public static final String DATABLOCK_ENCODING_OVERRIDE_CONF_KEY =
       "hbase.mapreduce.hfileoutputformat.datablock.encoding";
+
+  /**
+   * Keep locality while generating HFiles for bulkload. See HBASE-12596
+   */
+  public static final String LOCALITY_SENSITIVE_CONF_KEY =
+      "hbase.bulkload.locality.sensitive.enabled";
+  private static final boolean DEFAULT_LOCALITY_SENSITIVE = true;
+  private static final String OUTPUT_TABLE_NAME_CONF_KEY =
+      "hbase.mapreduce.hfileoutputformat.table.name";
 
   @Override
   public RecordWriter<ImmutableBytesWritable, Cell> getRecordWriter(
@@ -129,7 +145,7 @@ public class HFileOutputFormat2
     // Invented config.  Add to hbase-*.xml if other than default compression.
     final String defaultCompressionStr = conf.get("hfile.compression",
         Compression.Algorithm.NONE.getName());
-    final Algorithm defaultCompression = AbstractHFileWriter
+    final Algorithm defaultCompression = HFileWriterImpl
         .compressionByName(defaultCompressionStr);
     final boolean compactionExclude = conf.getBoolean(
         "hbase.mapreduce.hfileoutputformat.compaction.exclude", false);
@@ -191,7 +207,48 @@ public class HFileOutputFormat2
 
         // create a new WAL writer, if necessary
         if (wl == null || wl.writer == null) {
-          wl = getNewWriter(family, conf);
+          if (conf.getBoolean(LOCALITY_SENSITIVE_CONF_KEY, DEFAULT_LOCALITY_SENSITIVE)) {
+            HRegionLocation loc = null;
+            String tableName = conf.get(OUTPUT_TABLE_NAME_CONF_KEY);
+
+            try (Connection connection = ConnectionFactory.createConnection(conf);
+                   RegionLocator locator =
+                     connection.getRegionLocator(TableName.valueOf(tableName))) {
+              loc = locator.getRegionLocation(rowKey);
+            } catch (Throwable e) {
+              LOG.warn("there's something wrong when locating rowkey: " +
+                Bytes.toString(rowKey), e);
+              loc = null;
+            }
+
+            if (null == loc) {
+              if (LOG.isTraceEnabled()) {
+                LOG.trace("failed to get region location, so use default writer: " +
+                  Bytes.toString(rowKey));
+              }
+              wl = getNewWriter(family, conf, null);
+            } else {
+              if (LOG.isDebugEnabled()) {
+                LOG.debug("first rowkey: [" + Bytes.toString(rowKey) + "]");
+              }
+              InetSocketAddress initialIsa =
+                  new InetSocketAddress(loc.getHostname(), loc.getPort());
+              if (initialIsa.isUnresolved()) {
+                if (LOG.isTraceEnabled()) {
+                  LOG.trace("failed to resolve bind address: " + loc.getHostname() + ":"
+                      + loc.getPort() + ", so use default writer");
+                }
+                wl = getNewWriter(family, conf, null);
+              } else {
+                if(LOG.isDebugEnabled()) {
+                  LOG.debug("use favored nodes writer: " + initialIsa.getHostString());
+                }
+                wl = getNewWriter(family, conf, new InetSocketAddress[] { initialIsa });
+              }
+            }
+          } else {
+            wl = getNewWriter(family, conf, null);
+          }
         }
 
         // we now have the proper WAL writer. full steam ahead
@@ -223,8 +280,8 @@ public class HFileOutputFormat2
        */
       @edu.umd.cs.findbugs.annotations.SuppressWarnings(value="BX_UNBOXING_IMMEDIATELY_REBOXED",
           justification="Not important")
-      private WriterLength getNewWriter(byte[] family, Configuration conf)
-          throws IOException {
+      private WriterLength getNewWriter(byte[] family, Configuration conf,
+          InetSocketAddress[] favoredNodes) throws IOException {
         WriterLength wl = new WriterLength();
         Path familydir = new Path(outputdir, Bytes.toString(family));
         Algorithm compression = compressionMap.get(family);
@@ -246,10 +303,18 @@ public class HFileOutputFormat2
         contextBuilder.withDataBlockEncoding(encoding);
         HFileContext hFileContext = contextBuilder.build();
                                     
-        wl.writer = new StoreFile.WriterBuilder(conf, new CacheConfig(tempConf), fs)
-            .withOutputDir(familydir).withBloomType(bloomType)
-            .withComparator(KeyValue.COMPARATOR)
-            .withFileContext(hFileContext).build();
+        if (null == favoredNodes) {
+          wl.writer =
+              new StoreFile.WriterBuilder(conf, new CacheConfig(tempConf), fs)
+                  .withOutputDir(familydir).withBloomType(bloomType)
+                  .withComparator(CellComparator.COMPARATOR).withFileContext(hFileContext).build();
+        } else {
+          wl.writer =
+              new StoreFile.WriterBuilder(conf, new CacheConfig(tempConf), new HFileSystem(fs))
+                  .withOutputDir(familydir).withBloomType(bloomType)
+                  .withComparator(CellComparator.COMPARATOR).withFileContext(hFileContext)
+                  .withFavoredNodes(favoredNodes).build();
+        }
 
         this.writers.put(family, wl);
         return wl;
@@ -430,6 +495,12 @@ public class HFileOutputFormat2
         MutationSerialization.class.getName(), ResultSerialization.class.getName(),
         KeyValueSerialization.class.getName());
 
+    if (conf.getBoolean(LOCALITY_SENSITIVE_CONF_KEY, DEFAULT_LOCALITY_SENSITIVE)) {
+      // record this table name for creating writer by favored nodes
+      LOG.info("bulkload locality sensitive enabled");
+      conf.set(OUTPUT_TABLE_NAME_CONF_KEY, regionLocator.getName().getNameAsString());
+    }
+
     // Use table's region boundaries for TOP split points.
     LOG.info("Looking up current regions for table " + regionLocator.getName());
     List<ImmutableBytesWritable> startKeys = getRegionStartKeys(regionLocator);
@@ -483,7 +554,7 @@ public class HFileOutputFormat2
     Map<byte[], Algorithm> compressionMap = new TreeMap<byte[],
         Algorithm>(Bytes.BYTES_COMPARATOR);
     for (Map.Entry<byte[], String> e : stringMap.entrySet()) {
-      Algorithm algorithm = AbstractHFileWriter.compressionByName(e.getValue());
+      Algorithm algorithm = HFileWriterImpl.compressionByName(e.getValue());
       compressionMap.put(e.getKey(), algorithm);
     }
     return compressionMap;
@@ -584,17 +655,17 @@ public class HFileOutputFormat2
    */
   static void configurePartitioner(Job job, List<ImmutableBytesWritable> splitPoints)
       throws IOException {
-
+    Configuration conf = job.getConfiguration();
     // create the partitions file
-    FileSystem fs = FileSystem.get(job.getConfiguration());
-    Path partitionsPath = new Path("/tmp", "partitions_" + UUID.randomUUID());
+    FileSystem fs = FileSystem.get(conf);
+    Path partitionsPath = new Path(conf.get("hbase.fs.tmp.dir"), "partitions_" + UUID.randomUUID());
     fs.makeQualified(partitionsPath);
-    writePartitions(job.getConfiguration(), partitionsPath, splitPoints);
+    writePartitions(conf, partitionsPath, splitPoints);
     fs.deleteOnExit(partitionsPath);
 
     // configure job to use it
     job.setPartitionerClass(TotalOrderPartitioner.class);
-    TotalOrderPartitioner.setPartitionFile(job.getConfiguration(), partitionsPath);
+    TotalOrderPartitioner.setPartitionFile(conf, partitionsPath);
   }
 
   /**
@@ -626,7 +697,7 @@ public class HFileOutputFormat2
         familyDescriptor.getNameAsString(), "UTF-8"));
       compressionConfigValue.append('=');
       compressionConfigValue.append(URLEncoder.encode(
-        familyDescriptor.getCompression().getName(), "UTF-8"));
+        familyDescriptor.getCompressionType().getName(), "UTF-8"));
     }
     // Get rid of the last ampersand
     conf.set(COMPRESSION_FAMILIES_CONF_KEY, compressionConfigValue.toString());

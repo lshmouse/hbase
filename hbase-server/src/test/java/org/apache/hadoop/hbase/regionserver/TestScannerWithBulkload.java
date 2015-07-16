@@ -21,36 +21,37 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
-import junit.framework.Assert;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
-import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.io.hfile.HFileContext;
 import org.apache.hadoop.hbase.mapreduce.LoadIncrementalHFiles;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+
+import junit.framework.Assert;
 
 @Category({RegionServerTests.class, MediumTests.class})
 public class TestScannerWithBulkload {
@@ -83,7 +84,9 @@ public class TestScannerWithBulkload {
     Configuration conf = TEST_UTIL.getConfiguration();
     conf.setBoolean("hbase.mapreduce.bulkload.assign.sequenceNumbers", true);
     final LoadIncrementalHFiles bulkload = new LoadIncrementalHFiles(conf);
-    bulkload.doBulkLoad(hfilePath, (HTable) table);
+    try (RegionLocator locator = TEST_UTIL.getConnection().getRegionLocator(tableName)) {
+      bulkload.doBulkLoad(hfilePath, admin, table, locator);
+    }
     ResultScanner scanner = table.getScanner(scan);
     Result result = scanner.next();
     result = scanAfterBulkLoad(scanner, result, "version2");
@@ -97,11 +100,16 @@ public class TestScannerWithBulkload {
     while (result != null) {
       List<Cell> cells = result.getColumnCells(Bytes.toBytes("col"), Bytes.toBytes("q"));
       for (Cell _c : cells) {
-        if (Bytes.toString(_c.getRow()).equals("row1")) {
-          System.out.println(Bytes.toString(_c.getRow()));
-          System.out.println(Bytes.toString(_c.getQualifier()));
-          System.out.println(Bytes.toString(_c.getValue()));
-          Assert.assertEquals("version3", Bytes.toString(_c.getValue()));
+        if (Bytes.toString(_c.getRowArray(), _c.getRowOffset(), _c.getRowLength())
+            .equals("row1")) {
+          System.out
+              .println(Bytes.toString(_c.getRowArray(), _c.getRowOffset(), _c.getRowLength()));
+          System.out.println(Bytes.toString(_c.getQualifierArray(), _c.getQualifierOffset(),
+            _c.getQualifierLength()));
+          System.out.println(
+            Bytes.toString(_c.getValueArray(), _c.getValueOffset(), _c.getValueLength()));
+          Assert.assertEquals("version3",
+            Bytes.toString(_c.getValueArray(), _c.getValueOffset(), _c.getValueLength()));
         }
       }
       result = scanner.next();
@@ -115,11 +123,16 @@ public class TestScannerWithBulkload {
     while (result != null) {
       List<Cell> cells = result.getColumnCells(Bytes.toBytes("col"), Bytes.toBytes("q"));
       for (Cell _c : cells) {
-        if (Bytes.toString(_c.getRow()).equals("row1")) {
-          System.out.println(Bytes.toString(_c.getRow()));
-          System.out.println(Bytes.toString(_c.getQualifier()));
-          System.out.println(Bytes.toString(_c.getValue()));
-          Assert.assertEquals(expctedVal, Bytes.toString(_c.getValue()));
+        if (Bytes.toString(_c.getRowArray(), _c.getRowOffset(), _c.getRowLength())
+            .equals("row1")) {
+          System.out
+              .println(Bytes.toString(_c.getRowArray(), _c.getRowOffset(), _c.getRowLength()));
+          System.out.println(Bytes.toString(_c.getQualifierArray(), _c.getQualifierOffset(),
+            _c.getQualifierLength()));
+          System.out.println(
+            Bytes.toString(_c.getValueArray(), _c.getValueOffset(), _c.getValueLength()));
+          Assert.assertEquals(expctedVal,
+            Bytes.toString(_c.getValueArray(), _c.getValueOffset(), _c.getValueLength()));
         }
       }
       result = scanner.next();
@@ -168,8 +181,8 @@ public class TestScannerWithBulkload {
   private Table init(HBaseAdmin admin, long l, Scan scan, TableName tableName) throws Exception {
     Table table = TEST_UTIL.getConnection().getTable(tableName);
     Put put0 = new Put(Bytes.toBytes("row1"));
-    put0.add(new KeyValue(Bytes.toBytes("row1"), Bytes.toBytes("col"), Bytes.toBytes("q"), l, Bytes
-        .toBytes("version0")));
+    put0.add(new KeyValue(Bytes.toBytes("row1"), Bytes.toBytes("col"), Bytes.toBytes("q"), l,
+        Bytes.toBytes("version0")));
     table.put(put0);
     admin.flush(tableName);
     Put put1 = new Put(Bytes.toBytes("row2"));
@@ -188,16 +201,18 @@ public class TestScannerWithBulkload {
     Result result = scanner.next();
     List<Cell> cells = result.getColumnCells(Bytes.toBytes("col"), Bytes.toBytes("q"));
     Assert.assertEquals(1, cells.size());
-    Assert.assertEquals("version1", Bytes.toString(cells.get(0).getValue()));
+    Cell _c = cells.get(0);
+    Assert.assertEquals("version1",
+      Bytes.toString(_c.getValueArray(), _c.getValueOffset(), _c.getValueLength()));
     scanner.close();
     return table;
   }
 
   @Test
   public void testBulkLoadWithParallelScan() throws Exception {
-    TableName tableName = TableName.valueOf("testBulkLoadWithParallelScan");
+    final TableName tableName = TableName.valueOf("testBulkLoadWithParallelScan");
       final long l = System.currentTimeMillis();
-    HBaseAdmin admin = TEST_UTIL.getHBaseAdmin();
+    final HBaseAdmin admin = TEST_UTIL.getHBaseAdmin();
     createTable(admin, tableName);
     Scan scan = createScan();
     final Table table = init(admin, l, scan, tableName);
@@ -217,7 +232,9 @@ public class TestScannerWithBulkload {
           put1.add(new KeyValue(Bytes.toBytes("row5"), Bytes.toBytes("col"), Bytes.toBytes("q"), l,
               Bytes.toBytes("version0")));
           table.put(put1);
-          bulkload.doBulkLoad(hfilePath, (HTable) table);
+          try (RegionLocator locator = TEST_UTIL.getConnection().getRegionLocator(tableName)) {
+            bulkload.doBulkLoad(hfilePath, admin, table, locator);
+          }
           latch.countDown();
         } catch (TableNotFoundException e) {
         } catch (IOException e) {
@@ -231,7 +248,6 @@ public class TestScannerWithBulkload {
     scanAfterBulkLoad(scanner, result, "version1");
     scanner.close();
     table.close();
-
   }
 
   @Test
@@ -248,7 +264,9 @@ public class TestScannerWithBulkload {
     Configuration conf = TEST_UTIL.getConfiguration();
     conf.setBoolean("hbase.mapreduce.bulkload.assign.sequenceNumbers", true);
     final LoadIncrementalHFiles bulkload = new LoadIncrementalHFiles(conf);
-    bulkload.doBulkLoad(hfilePath, (HTable) table);
+    try (RegionLocator locator = TEST_UTIL.getConnection().getRegionLocator(tableName)) {
+      bulkload.doBulkLoad(hfilePath, admin, table, locator);
+    }
     ResultScanner scanner = table.getScanner(scan);
     Result result = scanner.next();
     // We had 'version0', 'version1' for 'row1,col:q' in the table.
@@ -264,11 +282,16 @@ public class TestScannerWithBulkload {
     while (result != null) {
       List<Cell> cells = result.getColumnCells(Bytes.toBytes("col"), Bytes.toBytes("q"));
       for (Cell _c : cells) {
-        if (Bytes.toString(_c.getRow()).equals("row1")) {
-          System.out.println(Bytes.toString(_c.getRow()));
-          System.out.println(Bytes.toString(_c.getQualifier()));
-          System.out.println(Bytes.toString(_c.getValue()));
-          Assert.assertEquals("version3", Bytes.toString(_c.getValue()));
+        if (Bytes.toString(_c.getRowArray(), _c.getRowOffset(), _c.getRowLength())
+            .equals("row1")) {
+          System.out
+              .println(Bytes.toString(_c.getRowArray(), _c.getRowOffset(), _c.getRowLength()));
+          System.out.println(Bytes.toString(_c.getQualifierArray(), _c.getQualifierOffset(),
+            _c.getQualifierLength()));
+          System.out.println(
+            Bytes.toString(_c.getValueArray(), _c.getValueOffset(), _c.getValueLength()));
+          Assert.assertEquals("version3",
+            Bytes.toString(_c.getValueArray(), _c.getValueOffset(), _c.getValueLength()));
         }
       }
       result = scanner.next();

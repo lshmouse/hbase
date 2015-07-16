@@ -52,6 +52,8 @@ import org.apache.hadoop.security.token.TokenIdentifier;
 public abstract class User {
   public static final String HBASE_SECURITY_CONF_KEY =
       "hbase.security.authentication";
+  public static final String HBASE_SECURITY_AUTHORIZATION_CONF_KEY =
+      "hbase.security.authorization";
 
   protected UserGroupInformation ugi;
 
@@ -192,7 +194,6 @@ public abstract class User {
    * @param action
    * @return the result of the action
    * @throws IOException
-   * @throws InterruptedException
    */
   @SuppressWarnings({ "rawtypes", "unchecked" })
   public static <T> T runAsLoginUser(PrivilegedExceptionAction<T> action) throws IOException {
@@ -226,7 +227,8 @@ public abstract class User {
    */
   public static User createUserForTesting(Configuration conf,
       String name, String[] groups) {
-    return SecureHadoopUser.createUserForTesting(conf, name, groups);
+    User userForTesting = SecureHadoopUser.createUserForTesting(conf, name, groups);
+    return userForTesting;
   }
 
   /**

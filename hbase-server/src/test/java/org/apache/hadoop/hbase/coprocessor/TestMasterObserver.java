@@ -38,6 +38,7 @@ import org.apache.hadoop.hbase.CoprocessorEnvironment;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
@@ -45,6 +46,8 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.RegionLocator;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.master.AssignmentManager;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
@@ -63,8 +66,10 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Threads;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.junit.rules.TestName;
 
 /**
  * Tests invocation of the {@link org.apache.hadoop.hbase.coprocessor.MasterObserver}
@@ -75,6 +80,7 @@ public class TestMasterObserver {
   private static final Log LOG = LogFactory.getLog(TestMasterObserver.class);
 
   public static CountDownLatch tableCreationLatch = new CountDownLatch(1);
+  public static CountDownLatch tableDeletionLatch = new CountDownLatch(1);
 
   public static class CPMasterObserver implements MasterObserver {
 
@@ -442,21 +448,35 @@ public class TestMasterObserver {
       return preListNamespaceDescriptorsCalled && !postListNamespaceDescriptorsCalled;
     }
 
+    @Deprecated
     @Override
-    public void preAddColumn(ObserverContext<MasterCoprocessorEnvironment> env,
-        TableName tableName, HColumnDescriptor column) throws IOException {
+    public void preAddColumn(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily
+    ) throws IOException {
+    }
+
+    @Override
+    public void preAddColumnFamily(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily
+    ) throws IOException {
       if (bypass) {
-        env.bypass();
+        ctx.bypass();
       }else{
-        env.shouldBypass();
+        ctx.shouldBypass();
       }
 
       preAddColumnCalled = true;
     }
 
+    @Deprecated
     @Override
-    public void postAddColumn(ObserverContext<MasterCoprocessorEnvironment> env,
-        TableName tableName, HColumnDescriptor column) throws IOException {
+    public void postAddColumn(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
+    }
+
+    @Override
+    public void postAddColumnFamily(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
       postAddColumnCalled = true;
     }
 
@@ -468,18 +488,30 @@ public class TestMasterObserver {
       return preAddColumnCalled && !postAddColumnCalled;
     }
 
+    @Deprecated
     @Override
-    public void preModifyColumn(ObserverContext<MasterCoprocessorEnvironment> env,
-        TableName tableName, HColumnDescriptor descriptor) throws IOException {
+    public void preModifyColumn(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
+    }
+
+    @Override
+    public void preModifyColumnFamily(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
       if (bypass) {
-        env.bypass();
+        ctx.bypass();
       }
       preModifyColumnCalled = true;
     }
 
+    @Deprecated
     @Override
-    public void postModifyColumn(ObserverContext<MasterCoprocessorEnvironment> env,
-        TableName tableName, HColumnDescriptor descriptor) throws IOException {
+    public void postModifyColumn(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
+    }
+
+    @Override
+    public void postModifyColumnFamily(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
       postModifyColumnCalled = true;
     }
 
@@ -491,20 +523,33 @@ public class TestMasterObserver {
       return preModifyColumnCalled && !postModifyColumnCalled;
     }
 
+    @Deprecated
     @Override
-    public void preDeleteColumn(ObserverContext<MasterCoprocessorEnvironment> env,
-        TableName tableName, byte[] c) throws IOException {
+    public void preDeleteColumn(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, byte[] columnFamily) throws IOException {
+    }
+
+    @Override
+    public void preDeleteColumnFamily(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, byte[] columnFamily) throws IOException {
       if (bypass) {
-        env.bypass();
+        ctx.bypass();
       }
       preDeleteColumnCalled = true;
     }
 
+    @Deprecated
     @Override
-    public void postDeleteColumn(ObserverContext<MasterCoprocessorEnvironment> env,
-        TableName tableName, byte[] c) throws IOException {
+    public void postDeleteColumn(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, byte[] columnFamily) throws IOException {
+    }
+
+    @Override
+    public void postDeleteColumnFamily(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, byte[] columnFamily) throws IOException {
       postDeleteColumnCalled = true;
     }
+
 
     public boolean wasDeleteColumnCalled() {
       return preDeleteColumnCalled && postDeleteColumnCalled;
@@ -874,6 +919,7 @@ public class TestMasterObserver {
         ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName)
         throws IOException {
       postDeleteTableHandlerCalled = true;
+      tableDeletionLatch.countDown();
     }
 
     public boolean wasDeleteTableHandlerCalled() {
@@ -934,22 +980,37 @@ public class TestMasterObserver {
       return preModifyColumnHandlerCalled && !postModifyColumnHandlerCalled;
     }
 
+    @Deprecated
     @Override
     public void preAddColumnHandler(
-        ObserverContext<MasterCoprocessorEnvironment> env, TableName tableName,
-        HColumnDescriptor column) throws IOException {
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        HColumnDescriptor columnFamily) throws IOException {
+    }
+
+    @Override
+    public void preAddColumnFamilyHandler(
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        HColumnDescriptor columnFamily) throws IOException {
       if (bypass) {
-        env.bypass();
+        ctx.bypass();
       }
       preAddColumnHandlerCalled = true;
     }
 
+    @Deprecated
     @Override
     public void postAddColumnHandler(
         ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
-        HColumnDescriptor column) throws IOException {
+        HColumnDescriptor columnFamily) throws IOException {
+    }
+
+    @Override
+    public void postAddColumnFamilyHandler(
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        HColumnDescriptor columnFamily) throws IOException {
       postAddColumnHandlerCalled = true;
     }
+
     public boolean wasAddColumnHandlerCalled() {
       return preAddColumnHandlerCalled && postAddColumnHandlerCalled;
     }
@@ -958,20 +1019,34 @@ public class TestMasterObserver {
       return preAddColumnHandlerCalled && !postAddColumnHandlerCalled;
     }
 
+    @Deprecated
     @Override
     public void preModifyColumnHandler(
-        ObserverContext<MasterCoprocessorEnvironment> env, TableName tableName,
-        HColumnDescriptor descriptor) throws IOException {
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        HColumnDescriptor columnFamily) throws IOException {
+    }
+
+    @Override
+    public void preModifyColumnFamilyHandler(
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        HColumnDescriptor columnFamily) throws IOException {
       if (bypass) {
-        env.bypass();
+        ctx.bypass();
       }
       preModifyColumnHandlerCalled = true;
     }
 
+    @Deprecated
     @Override
     public void postModifyColumnHandler(
         ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
-        HColumnDescriptor descriptor) throws IOException {
+        HColumnDescriptor columnFamily) throws IOException {
+    }
+
+    @Override
+    public void postModifyColumnFamilyHandler(
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        HColumnDescriptor columnFamily) throws IOException {
       postModifyColumnHandlerCalled = true;
     }
 
@@ -982,20 +1057,35 @@ public class TestMasterObserver {
     public boolean preModifyColumnHandlerCalledOnly() {
       return preModifyColumnHandlerCalled && !postModifyColumnHandlerCalled;
     }
+
+    @Deprecated
     @Override
     public void preDeleteColumnHandler(
-        ObserverContext<MasterCoprocessorEnvironment> env, TableName tableName,
-        byte[] c) throws IOException {
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        byte[] columnFamily) throws IOException {
+    }
+
+    @Override
+    public void preDeleteColumnFamilyHandler(
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        byte[] columnFamily) throws IOException {
       if (bypass) {
-        env.bypass();
+        ctx.bypass();
       }
       preDeleteColumnHandlerCalled = true;
     }
 
+    @Deprecated
     @Override
     public void postDeleteColumnHandler(
         ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
-        byte[] c) throws IOException {
+        byte[] columnFamily) throws IOException {
+    }
+
+    @Override
+    public void postDeleteColumnFamilyHandler(
+        ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName,
+        byte[] columnFamily) throws IOException {
       postDeleteColumnHandlerCalled = true;
     }
 
@@ -1154,11 +1244,10 @@ public class TestMasterObserver {
 
   private static HBaseTestingUtility UTIL = new HBaseTestingUtility();
   private static byte[] TEST_SNAPSHOT = Bytes.toBytes("observed_snapshot");
-  private static TableName TEST_TABLE = TableName.valueOf("observed_table");
   private static TableName TEST_CLONE = TableName.valueOf("observed_clone");
   private static byte[] TEST_FAMILY = Bytes.toBytes("fam1");
   private static byte[] TEST_FAMILY2 = Bytes.toBytes("fam2");
-  private static byte[] TEST_FAMILY3 = Bytes.toBytes("fam3");
+  @Rule public TestName name = new TestName();
 
   @BeforeClass
   public static void setupBeforeClass() throws Exception {
@@ -1179,7 +1268,7 @@ public class TestMasterObserver {
     UTIL.shutdownMiniCluster();
   }
 
-  @Test
+  @Test (timeout=180000)
   public void testStarted() throws Exception {
     MiniHBaseCluster cluster = UTIL.getHBaseCluster();
 
@@ -1199,10 +1288,10 @@ public class TestMasterObserver {
         cp.wasStartMasterCalled());
   }
 
-  @Test
+  @Test (timeout=180000)
   public void testTableOperations() throws Exception {
     MiniHBaseCluster cluster = UTIL.getHBaseCluster();
-
+    final TableName tableName = TableName.valueOf(name.getMethodName());
     HMaster master = cluster.getMaster();
     MasterCoprocessorHost host = master.getMasterCoprocessorHost();
     CPMasterObserver cp = (CPMasterObserver)host.findCoprocessor(
@@ -1212,7 +1301,7 @@ public class TestMasterObserver {
     assertFalse("No table created yet", cp.wasCreateTableCalled());
 
     // create a table
-    HTableDescriptor htd = new HTableDescriptor(TEST_TABLE);
+    HTableDescriptor htd = new HTableDescriptor(tableName);
     htd.addFamily(new HColumnDescriptor(TEST_FAMILY));
     Admin admin = UTIL.getHBaseAdmin();
 
@@ -1227,8 +1316,8 @@ public class TestMasterObserver {
         cp.wasCreateTableHandlerCalled());
 
     tableCreationLatch = new CountDownLatch(1);
-    admin.disableTable(TEST_TABLE);
-    assertTrue(admin.isTableDisabled(TEST_TABLE));
+    admin.disableTable(tableName);
+    assertTrue(admin.isTableDisabled(tableName));
     // preDisableTable can't bypass default action.
     assertTrue("Coprocessor should have been called on table disable",
       cp.wasDisableTableCalled());
@@ -1237,45 +1326,45 @@ public class TestMasterObserver {
 
     // enable
     assertFalse(cp.wasEnableTableCalled());
-    admin.enableTable(TEST_TABLE);
-    assertTrue(admin.isTableEnabled(TEST_TABLE));
+    admin.enableTable(tableName);
+    assertTrue(admin.isTableEnabled(tableName));
     // preEnableTable can't bypass default action.
     assertTrue("Coprocessor should have been called on table enable",
       cp.wasEnableTableCalled());
     assertTrue("Enable table handler should be called.",
         cp.wasEnableTableHandlerCalled());
 
-    admin.disableTable(TEST_TABLE);
-    assertTrue(admin.isTableDisabled(TEST_TABLE));
+    admin.disableTable(tableName);
+    assertTrue(admin.isTableDisabled(tableName));
 
     // modify table
     htd.setMaxFileSize(512 * 1024 * 1024);
-    modifyTableSync(admin, TEST_TABLE, htd);
+    modifyTableSync(admin, tableName, htd);
     // preModifyTable can't bypass default action.
     assertTrue("Test table should have been modified",
       cp.wasModifyTableCalled());
 
     // add a column family
-    admin.addColumn(TEST_TABLE, new HColumnDescriptor(TEST_FAMILY2));
+    admin.addColumnFamily(tableName, new HColumnDescriptor(TEST_FAMILY2));
     assertTrue("New column family shouldn't have been added to test table",
       cp.preAddColumnCalledOnly());
 
     // modify a column family
     HColumnDescriptor hcd1 = new HColumnDescriptor(TEST_FAMILY2);
     hcd1.setMaxVersions(25);
-    admin.modifyColumn(TEST_TABLE, hcd1);
+    admin.modifyColumnFamily(tableName, hcd1);
     assertTrue("Second column family should be modified",
       cp.preModifyColumnCalledOnly());
 
     // truncate table
-    admin.truncateTable(TEST_TABLE, false);
+    admin.truncateTable(tableName, false);
 
     // delete table
-    admin.disableTable(TEST_TABLE);
-    assertTrue(admin.isTableDisabled(TEST_TABLE));
-    admin.deleteTable(TEST_TABLE);
+    admin.disableTable(tableName);
+    assertTrue(admin.isTableDisabled(tableName));
+    deleteTable(admin, tableName);
     assertFalse("Test table should have been deleted",
-        admin.tableExists(TEST_TABLE));
+        admin.tableExists(tableName));
     // preDeleteTable can't bypass default action.
     assertTrue("Coprocessor should have been called on table delete",
         cp.wasDeleteTableCalled());
@@ -1297,8 +1386,8 @@ public class TestMasterObserver {
     // disable
     assertFalse(cp.wasDisableTableCalled());
     assertFalse(cp.wasDisableTableHandlerCalled());
-    admin.disableTable(TEST_TABLE);
-    assertTrue(admin.isTableDisabled(TEST_TABLE));
+    admin.disableTable(tableName);
+    assertTrue(admin.isTableDisabled(tableName));
     assertTrue("Coprocessor should have been called on table disable",
       cp.wasDisableTableCalled());
     assertTrue("Disable table handler should be called.",
@@ -1306,11 +1395,11 @@ public class TestMasterObserver {
 
     // modify table
     htd.setMaxFileSize(512 * 1024 * 1024);
-    modifyTableSync(admin, TEST_TABLE, htd);
+    modifyTableSync(admin, tableName, htd);
     assertTrue("Test table should have been modified",
         cp.wasModifyTableCalled());
     // add a column family
-    admin.addColumn(TEST_TABLE, new HColumnDescriptor(TEST_FAMILY2));
+    admin.addColumnFamily(tableName, new HColumnDescriptor(TEST_FAMILY2));
     assertTrue("New column family should have been added to test table",
         cp.wasAddColumnCalled());
     assertTrue("Add column handler should be called.",
@@ -1319,7 +1408,7 @@ public class TestMasterObserver {
     // modify a column family
     HColumnDescriptor hcd = new HColumnDescriptor(TEST_FAMILY2);
     hcd.setMaxVersions(25);
-    admin.modifyColumn(TEST_TABLE, hcd);
+    admin.modifyColumnFamily(tableName, hcd);
     assertTrue("Second column family should be modified",
         cp.wasModifyColumnCalled());
     assertTrue("Modify table handler should be called.",
@@ -1328,23 +1417,23 @@ public class TestMasterObserver {
     // enable
     assertFalse(cp.wasEnableTableCalled());
     assertFalse(cp.wasEnableTableHandlerCalled());
-    admin.enableTable(TEST_TABLE);
-    assertTrue(admin.isTableEnabled(TEST_TABLE));
+    admin.enableTable(tableName);
+    assertTrue(admin.isTableEnabled(tableName));
     assertTrue("Coprocessor should have been called on table enable",
         cp.wasEnableTableCalled());
     assertTrue("Enable table handler should be called.",
         cp.wasEnableTableHandlerCalled());
 
     // disable again
-    admin.disableTable(TEST_TABLE);
-    assertTrue(admin.isTableDisabled(TEST_TABLE));
+    admin.disableTable(tableName);
+    assertTrue(admin.isTableDisabled(tableName));
 
     // delete column
     assertFalse("No column family deleted yet", cp.wasDeleteColumnCalled());
     assertFalse("Delete table column handler should not be called.",
         cp.wasDeleteColumnHandlerCalled());
-    admin.deleteColumn(TEST_TABLE, TEST_FAMILY2);
-    HTableDescriptor tableDesc = admin.getTableDescriptor(TEST_TABLE);
+    admin.deleteColumnFamily(tableName, TEST_FAMILY2);
+    HTableDescriptor tableDesc = admin.getTableDescriptor(tableName);
     assertNull("'"+Bytes.toString(TEST_FAMILY2)+"' should have been removed",
         tableDesc.getFamily(TEST_FAMILY2));
     assertTrue("Coprocessor should have been called on column delete",
@@ -1356,17 +1445,18 @@ public class TestMasterObserver {
     assertFalse("No table deleted yet", cp.wasDeleteTableCalled());
     assertFalse("Delete table handler should not be called.",
         cp.wasDeleteTableHandlerCalled());
-    admin.deleteTable(TEST_TABLE);
+    deleteTable(admin, tableName);
     assertFalse("Test table should have been deleted",
-        admin.tableExists(TEST_TABLE));
+        admin.tableExists(tableName));
     assertTrue("Coprocessor should have been called on table delete",
         cp.wasDeleteTableCalled());
     assertTrue("Delete table handler should be called.",
         cp.wasDeleteTableHandlerCalled());
   }
 
-  @Test
+  @Test (timeout=180000)
   public void testSnapshotOperations() throws Exception {
+    final TableName tableName = TableName.valueOf(name.getMethodName());
     MiniHBaseCluster cluster = UTIL.getHBaseCluster();
     HMaster master = cluster.getMaster();
     MasterCoprocessorHost host = master.getMasterCoprocessorHost();
@@ -1375,7 +1465,7 @@ public class TestMasterObserver {
     cp.resetStates();
 
     // create a table
-    HTableDescriptor htd = new HTableDescriptor(TEST_TABLE);
+    HTableDescriptor htd = new HTableDescriptor(tableName);
     htd.addFamily(new HColumnDescriptor(TEST_FAMILY));
     Admin admin = UTIL.getHBaseAdmin();
 
@@ -1384,14 +1474,14 @@ public class TestMasterObserver {
     tableCreationLatch.await();
     tableCreationLatch = new CountDownLatch(1);
 
-    admin.disableTable(TEST_TABLE);
-    assertTrue(admin.isTableDisabled(TEST_TABLE));
+    admin.disableTable(tableName);
+    assertTrue(admin.isTableDisabled(tableName));
 
     try {
       // Test snapshot operation
       assertFalse("Coprocessor should not have been called yet",
         cp.wasSnapshotCalled());
-      admin.snapshot(TEST_SNAPSHOT, TEST_TABLE);
+      admin.snapshot(TEST_SNAPSHOT, tableName);
       assertTrue("Coprocessor should have been called on snapshot",
         cp.wasSnapshotCalled());
 
@@ -1407,8 +1497,8 @@ public class TestMasterObserver {
       assertFalse("Coprocessor restore should not have been called on snapshot clone",
         cp.wasRestoreSnapshotCalled());
       admin.disableTable(TEST_CLONE);
-      assertTrue(admin.isTableDisabled(TEST_TABLE));
-      admin.deleteTable(TEST_CLONE);
+      assertTrue(admin.isTableDisabled(tableName));
+      deleteTable(admin, TEST_CLONE);
 
       // Test restore operation
       cp.resetStates();
@@ -1422,11 +1512,11 @@ public class TestMasterObserver {
       assertTrue("Coprocessor should have been called on snapshot delete",
         cp.wasDeleteSnapshotCalled());
     } finally {
-      admin.deleteTable(TEST_TABLE);
+      deleteTable(admin, tableName);
     }
   }
 
-  @Test
+  @Test (timeout=180000)
   public void testNamespaceOperations() throws Exception {
     MiniHBaseCluster cluster = UTIL.getHBaseCluster();
     String testNamespace = "observed_ns";
@@ -1513,8 +1603,9 @@ public class TestMasterObserver {
     }
   }
 
-  @Test
+  @Test (timeout=180000)
   public void testRegionTransitionOperations() throws Exception {
+    final TableName tableName = TableName.valueOf(name.getMethodName());
     MiniHBaseCluster cluster = UTIL.getHBaseCluster();
 
     HMaster master = cluster.getMaster();
@@ -1524,15 +1615,15 @@ public class TestMasterObserver {
     cp.enableBypass(false);
     cp.resetStates();
 
-    HTable table = UTIL.createMultiRegionTable(TEST_TABLE, TEST_FAMILY);
+    Table table = UTIL.createMultiRegionTable(tableName, TEST_FAMILY);
 
-    try {
-      UTIL.waitUntilAllRegionsAssigned(TEST_TABLE);
+    try (RegionLocator r = UTIL.getConnection().getRegionLocator(tableName)) {
+      UTIL.waitUntilAllRegionsAssigned(tableName);
 
-      NavigableMap<HRegionInfo, ServerName> regions = table.getRegionLocations();
-      Map.Entry<HRegionInfo, ServerName> firstGoodPair = null;
-      for (Map.Entry<HRegionInfo, ServerName> e: regions.entrySet()) {
-        if (e.getValue() != null) {
+      List<HRegionLocation> regions = r.getAllRegionLocations();
+      HRegionLocation firstGoodPair = null;
+      for (HRegionLocation e: regions) {
+        if (e.getServerName() != null) {
           firstGoodPair = e;
           break;
         }
@@ -1542,7 +1633,7 @@ public class TestMasterObserver {
       // Try to force a move
       Collection<ServerName> servers = master.getClusterStatus().getServers();
       String destName = null;
-      String serverNameForFirstRegion = firstGoodPair.getValue().toString();
+      String serverNameForFirstRegion = firstGoodPair.getServerName().toString();
       LOG.info("serverNameForFirstRegion=" + serverNameForFirstRegion);
       ServerName masterServerName = master.getServerName();
       boolean found = false;
@@ -1559,7 +1650,7 @@ public class TestMasterObserver {
       assertTrue("Found server", found);
       LOG.info("Found " + destName);
       master.getMasterRpcServices().moveRegion(null, RequestConverter.buildMoveRegionRequest(
-          firstGoodPair.getKey().getEncodedNameAsBytes(),Bytes.toBytes(destName)));
+          firstGoodPair.getRegionInfo().getEncodedNameAsBytes(),Bytes.toBytes(destName)));
       assertTrue("Coprocessor should have been called on region move",
         cp.wasMoveCalled());
 
@@ -1601,7 +1692,9 @@ public class TestMasterObserver {
       assertTrue("Coprocessor should be called on region rebalancing",
           cp.wasBalanceCalled());
     } finally {
-      UTIL.deleteTable(TEST_TABLE);
+      Admin admin = UTIL.getHBaseAdmin();
+      admin.disableTable(tableName);
+      deleteTable(admin, tableName);
     }
   }
 
@@ -1615,7 +1708,7 @@ public class TestMasterObserver {
     }
   }
 
-  @Test
+  @Test (timeout=180000)
   public void testTableDescriptorsEnumeration() throws Exception {
     MiniHBaseCluster cluster = UTIL.getHBaseCluster();
 
@@ -1633,7 +1726,7 @@ public class TestMasterObserver {
       cp.wasGetTableDescriptorsCalled());
   }
 
-  @Test
+  @Test (timeout=180000)
   public void testTableNamesEnumeration() throws Exception {
     MiniHBaseCluster cluster = UTIL.getHBaseCluster();
 
@@ -1647,5 +1740,14 @@ public class TestMasterObserver {
         GetTableNamesRequest.newBuilder().build());
     assertTrue("Coprocessor should be called on table names request",
       cp.wasGetTableNamesCalled());
+  }
+
+  private void deleteTable(Admin admin, TableName tableName) throws Exception {
+    // NOTE: We need a latch because admin is not sync,
+    // so the postOp coprocessor method may be called after the admin operation returned.
+    tableDeletionLatch = new CountDownLatch(1);
+    admin.deleteTable(tableName);
+    tableDeletionLatch.await();
+    tableDeletionLatch = new CountDownLatch(1);
   }
 }

@@ -50,7 +50,7 @@ import com.google.common.annotations.VisibleForTesting;
 @InterfaceAudience.Private
 @VisibleForTesting
 public class LogRoller extends HasThread {
-  static final Log LOG = LogFactory.getLog(LogRoller.class);
+  private static final Log LOG = LogFactory.getLog(LogRoller.class);
   private final ReentrantLock rollLock = new ReentrantLock();
   private final AtomicBoolean rollLog = new AtomicBoolean(false);
   private final ConcurrentHashMap<WAL, Boolean> walNeedsRoll =
@@ -164,7 +164,7 @@ public class LogRoller extends HasThread {
    */
   private void scheduleFlush(final byte [] encodedRegionName) {
     boolean scheduled = false;
-    HRegion r = this.services.getFromOnlineRegions(Bytes.toString(encodedRegionName));
+    Region r = this.services.getFromOnlineRegions(Bytes.toString(encodedRegionName));
     FlushRequester requester = null;
     if (r != null) {
       requester = this.services.getFlushRequester();

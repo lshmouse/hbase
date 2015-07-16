@@ -230,8 +230,8 @@ struct TScan {
  * Atomic mutation for the specified row. It can be either Put or Delete.
  */
 union TMutation {
-  1: optional TPut put,
-  2: optional TDelete deleteSingle,
+  1: TPut put,
+  2: TDelete deleteSingle,
 }
 
 /**
@@ -240,6 +240,27 @@ union TMutation {
 struct TRowMutations {
   1: required binary row
   2: required list<TMutation> mutations
+}
+
+struct THRegionInfo {
+  1: required i64 regionId
+  2: required binary tableName
+  3: optional binary startKey
+  4: optional binary endKey
+  5: optional bool offline
+  6: optional bool split
+  7: optional i32 replicaId
+}
+
+struct TServerName {
+  1: required string hostName
+  2: optional i32 port
+  3: optional i64 startCode
+}
+
+struct THRegionLocation {
+  1: required TServerName serverName
+  2: required THRegionInfo regionInfo
 }
 
 //
@@ -275,7 +296,7 @@ service THBaseService {
     1: required binary table,
 
     /** the TGet to check for */
-    2: required TGet get
+    2: required TGet tget
   ) throws (1:TIOError io)
 
   /**
@@ -291,7 +312,7 @@ service THBaseService {
     1: required binary table,
 
     /** the TGet to fetch */
-    2: required TGet get
+    2: required TGet tget
   ) throws (1: TIOError io)
 
   /**
@@ -310,7 +331,7 @@ service THBaseService {
     /** a list of TGets to fetch, the Result list
         will have the Results at corresponding positions
         or null if there was an error */
-    2: required list<TGet> gets
+    2: required list<TGet> tgets
   ) throws (1: TIOError io)
 
   /**
@@ -321,7 +342,7 @@ service THBaseService {
     1: required binary table,
 
     /** the TPut to put */
-    2: required TPut put
+    2: required TPut tput
   ) throws (1: TIOError io)
 
   /**
@@ -349,7 +370,7 @@ service THBaseService {
     5: binary value,
 
     /** the TPut to put if the check succeeds */
-    6: required TPut put
+    6: required TPut tput
   ) throws (1: TIOError io)
 
   /**
@@ -360,7 +381,7 @@ service THBaseService {
     1: required binary table,
 
     /** a list of TPuts to commit */
-    2: required list<TPut> puts
+    2: required list<TPut> tputs
   ) throws (1: TIOError io)
 
   /**
@@ -374,7 +395,7 @@ service THBaseService {
     1: required binary table,
 
     /** the TDelete to delete */
-    2: required TDelete deleteSingle
+    2: required TDelete tdelete
   ) throws (1: TIOError io)
 
   /**
@@ -389,7 +410,7 @@ service THBaseService {
     1: required binary table,
 
     /** list of TDeletes to delete */
-    2: required list<TDelete> deletes
+    2: required list<TDelete> tdeletes
   ) throws (1: TIOError io)
 
   /**
@@ -417,7 +438,7 @@ service THBaseService {
     5: binary value,
 
     /** the TDelete to execute if the check succeeds */
-    6: required TDelete deleteSingle
+    6: required TDelete tdelete
   ) throws (1: TIOError io)
 
   TResult increment(
@@ -425,7 +446,7 @@ service THBaseService {
     1: required binary table,
 
     /** the TIncrement to increment */
-    2: required TIncrement increment
+    2: required TIncrement tincrement
   ) throws (1: TIOError io)
 
   TResult append(
@@ -433,7 +454,7 @@ service THBaseService {
     1: required binary table,
 
     /** the TAppend to append */
-    2: required TAppend append
+    2: required TAppend tappend
   ) throws (1: TIOError io)
 
   /**
@@ -446,7 +467,7 @@ service THBaseService {
     1: required binary table,
 
     /** the scan object to get a Scanner for */
-    2: required TScan scan,
+    2: required TScan tscan,
   ) throws (1: TIOError io)
 
   /**
@@ -490,7 +511,7 @@ service THBaseService {
     1: required binary table,
 
     /** mutations to apply */
-    2: required TRowMutations rowMutations
+    2: required TRowMutations trowMutations
   ) throws (1: TIOError io)
 
   /**
@@ -504,7 +525,7 @@ service THBaseService {
     1: required binary table,
 
     /** the scan object to get a Scanner for */
-    2: required TScan scan,
+    2: required TScan tscan,
 
     /** number of rows to return */
     3: i32 numRows = 1
@@ -512,4 +533,27 @@ service THBaseService {
     1: TIOError io
   )
 
+  /**
+   * Given a table and a row get the location of the region that
+   * would contain the given row key.
+   *
+   * reload = true means the cache will be cleared and the location
+   * will be fetched from meta.
+   */
+  THRegionLocation getRegionLocation(
+    1: required binary table,
+    2: required binary row,
+    3: bool reload,
+  ) throws (
+    1: TIOError io
+  )
+
+  /**
+   * Get all of the region locations for a given table.
+   **/
+  list<THRegionLocation> getAllRegionLocations(
+    1: required binary table,
+  ) throws (
+    1: TIOError io
+  )
 }

@@ -22,11 +22,13 @@ package org.apache.hadoop.hbase.io;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
+import org.apache.hadoop.hbase.util.ByteBufferUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 
 /**
@@ -43,15 +45,31 @@ public class ByteBufferOutputStream extends OutputStream {
   }
 
   public ByteBufferOutputStream(int capacity, boolean useDirectByteBuffer) {
-    if (useDirectByteBuffer) {
-      buf = ByteBuffer.allocateDirect(capacity);
-    } else {
-      buf = ByteBuffer.allocate(capacity);
-    }
+    this(allocate(capacity, useDirectByteBuffer));
+  }
+
+  /**
+   * @param bb ByteBuffer to use. If too small, will be discarded and a new one allocated in its
+   * place; i.e. the passed in BB may NOT BE RETURNED!! Minimally it will be altered. SIDE EFFECT!!
+   * If you want to get the newly allocated ByteBuffer, you'll need to pick it up when
+   * done with this instance by calling {@link #getByteBuffer()}. All this encapsulation violation
+   * is so we can recycle buffers rather than allocate each time; it can get expensive especially
+   * if the buffers are big doing allocations each time or having them undergo resizing because
+   * initial allocation was small.
+   * @see #getByteBuffer()
+   */
+  public ByteBufferOutputStream(final ByteBuffer bb) {
+    assert bb.order() == ByteOrder.BIG_ENDIAN;
+    this.buf = bb;
+    this.buf.clear();
   }
 
   public int size() {
     return buf.position();
+  }
+
+  private static ByteBuffer allocate(final int capacity, final boolean useDirectByteBuffer) {
+    return useDirectByteBuffer? ByteBuffer.allocateDirect(capacity): ByteBuffer.allocate(capacity);
   }
 
   /**
@@ -70,14 +88,9 @@ public class ByteBufferOutputStream extends OutputStream {
       int newSize = (int)Math.min((((long)buf.capacity()) * 2),
           (long)(Integer.MAX_VALUE));
       newSize = Math.max(newSize, buf.position() + extra);
-      ByteBuffer newBuf = null;
-      if (buf.isDirect()) {
-        newBuf = ByteBuffer.allocateDirect(newSize);
-      } else {
-        newBuf = ByteBuffer.allocate(newSize);
-      }
+      ByteBuffer newBuf = allocate(newSize, buf.isDirect());
       buf.flip();
-      newBuf.put(buf);
+      ByteBufferUtils.copyFromBufferToBuffer(buf, newBuf);
       buf = newBuf;
     }
   }
@@ -86,7 +99,6 @@ public class ByteBufferOutputStream extends OutputStream {
   @Override
   public void write(int b) throws IOException {
     checkSizeAndGrow(Bytes.SIZEOF_BYTE);
-
     buf.put((byte)b);
   }
 
@@ -106,16 +118,24 @@ public class ByteBufferOutputStream extends OutputStream {
 
   @Override
   public void write(byte[] b) throws IOException {
-    checkSizeAndGrow(b.length);
-
-    buf.put(b);
+    write(b, 0, b.length);
   }
 
   @Override
   public void write(byte[] b, int off, int len) throws IOException {
     checkSizeAndGrow(len);
+    ByteBufferUtils.copyFromArrayToBuffer(buf, b, off, len);
+  }
 
-    buf.put(b, off, len);
+  /**
+   * Writes an <code>int</code> to the underlying output stream as four
+   * bytes, high byte first.
+   * @param i the <code>int</code> to write
+   * @throws IOException if an I/O error occurs.
+   */
+  public void writeInt(int i) throws IOException {
+    checkSizeAndGrow(Bytes.SIZEOF_INT);
+    ByteBufferUtils.putInt(this.buf, i);
   }
 
   @Override

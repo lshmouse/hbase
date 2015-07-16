@@ -38,9 +38,11 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.RegionLocator;
+import org.apache.hadoop.hbase.client.Table;
 
 /**
  * Computes size of each region for given table and given column families.
@@ -65,12 +67,11 @@ public class RegionSizeCalculator {
    * @deprecated Use {@link #RegionSizeCalculator(RegionLocator, Admin)} instead.
    */
   @Deprecated
-  public RegionSizeCalculator(HTable table) throws IOException {
-    HBaseAdmin admin = new HBaseAdmin(table.getConfiguration());
-    try {
-      init(table.getRegionLocator(), admin);
-    } finally {
-      admin.close();
+  public RegionSizeCalculator(Table table) throws IOException {
+    try (Connection conn = ConnectionFactory.createConnection(table.getConfiguration());
+        RegionLocator locator = conn.getRegionLocator(table.getName());
+        Admin admin = conn.getAdmin()) {
+      init(locator, admin);
     }
   }
 
@@ -85,6 +86,11 @@ public class RegionSizeCalculator {
       throws IOException {
     if (!enabled(admin.getConfiguration())) {
       LOG.info("Region size calculation disabled.");
+      return;
+    }
+
+    if (regionLocator.getName().isSystemTable()) {
+      LOG.info("Region size calculation disabled for system tables.");
       return;
     }
 

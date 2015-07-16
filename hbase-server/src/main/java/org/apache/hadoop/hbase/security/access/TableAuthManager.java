@@ -23,14 +23,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.AuthUtil;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
+import org.apache.hadoop.hbase.security.Superusers;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -78,19 +81,19 @@ public class TableAuthManager {
 
     /**
      * Returns a combined map of user and group permissions, with group names prefixed by
-     * {@link AccessControlLists#GROUP_PREFIX}.
+     * {@link AuthUtil#GROUP_PREFIX}.
      */
     public ListMultimap<String,T> getAllPermissions() {
       ListMultimap<String,T> tmp = ArrayListMultimap.create();
       tmp.putAll(userCache);
       for (String group : groupCache.keySet()) {
-        tmp.putAll(AccessControlLists.GROUP_PREFIX + group, groupCache.get(group));
+        tmp.putAll(AuthUtil.toGroupEntry(group), groupCache.get(group));
       }
       return tmp;
     }
   }
 
-  private static Log LOG = LogFactory.getLog(TableAuthManager.class);
+  private static final Log LOG = LogFactory.getLog(TableAuthManager.class);
 
   private static TableAuthManager instance;
 
@@ -105,7 +108,7 @@ public class TableAuthManager {
 
   private Configuration conf;
   private ZKPermissionWatcher zkperms;
-  private volatile long mtime;
+  private final AtomicLong mtime = new AtomicLong(0L);
 
   private TableAuthManager(ZooKeeperWatcher watcher, Configuration conf)
       throws IOException {
@@ -138,11 +141,11 @@ public class TableAuthManager {
 
     // the system user is always included
     List<String> superusers = Lists.asList(currentUser, conf.getStrings(
-        AccessControlLists.SUPERUSER_CONF_KEY, new String[0]));
+        Superusers.SUPERUSER_CONF_KEY, new String[0]));
     if (superusers != null) {
       for (String name : superusers) {
-        if (AccessControlLists.isGroupPrincipal(name)) {
-          newCache.putGroup(AccessControlLists.getGroupName(name),
+        if (AuthUtil.isGroupPrincipal(name)) {
+          newCache.putGroup(AuthUtil.getGroupName(name),
               new Permission(Permission.Action.values()));
         } else {
           newCache.putUser(name, new Permission(Permission.Action.values()));
@@ -204,15 +207,15 @@ public class TableAuthManager {
     try {
       newCache = initGlobal(conf);
       for (Map.Entry<String,TablePermission> entry : userPerms.entries()) {
-        if (AccessControlLists.isGroupPrincipal(entry.getKey())) {
-          newCache.putGroup(AccessControlLists.getGroupName(entry.getKey()),
+        if (AuthUtil.isGroupPrincipal(entry.getKey())) {
+          newCache.putGroup(AuthUtil.getGroupName(entry.getKey()),
               new Permission(entry.getValue().getActions()));
         } else {
           newCache.putUser(entry.getKey(), new Permission(entry.getValue().getActions()));
         }
       }
       globalCache = newCache;
-      mtime++;
+      mtime.incrementAndGet();
     } catch (IOException e) {
       // Never happens
       LOG.error("Error occured while updating the global cache", e);
@@ -232,15 +235,15 @@ public class TableAuthManager {
     PermissionCache<TablePermission> newTablePerms = new PermissionCache<TablePermission>();
 
     for (Map.Entry<String,TablePermission> entry : tablePerms.entries()) {
-      if (AccessControlLists.isGroupPrincipal(entry.getKey())) {
-        newTablePerms.putGroup(AccessControlLists.getGroupName(entry.getKey()), entry.getValue());
+      if (AuthUtil.isGroupPrincipal(entry.getKey())) {
+        newTablePerms.putGroup(AuthUtil.getGroupName(entry.getKey()), entry.getValue());
       } else {
         newTablePerms.putUser(entry.getKey(), entry.getValue());
       }
     }
 
     tableCache.put(table, newTablePerms);
-    mtime++;
+    mtime.incrementAndGet();
   }
 
   /**
@@ -256,15 +259,15 @@ public class TableAuthManager {
     PermissionCache<TablePermission> newTablePerms = new PermissionCache<TablePermission>();
 
     for (Map.Entry<String, TablePermission> entry : tablePerms.entries()) {
-      if (AccessControlLists.isGroupPrincipal(entry.getKey())) {
-        newTablePerms.putGroup(AccessControlLists.getGroupName(entry.getKey()), entry.getValue());
+      if (AuthUtil.isGroupPrincipal(entry.getKey())) {
+        newTablePerms.putGroup(AuthUtil.getGroupName(entry.getKey()), entry.getValue());
       } else {
         newTablePerms.putUser(entry.getKey(), entry.getValue());
       }
     }
 
     nsCache.put(namespace, newTablePerms);
-    mtime++;
+    mtime.incrementAndGet();
   }
 
   private PermissionCache<TablePermission> getTablePermissions(TableName table) {
@@ -295,7 +298,7 @@ public class TableAuthManager {
         }
       }
     } else if (LOG.isDebugEnabled()) {
-      LOG.debug("No permissions found");
+      LOG.debug("No permissions found for " + action);
     }
 
     return false;
@@ -391,7 +394,7 @@ public class TableAuthManager {
 
   public boolean authorize(User user, String namespace, Permission.Action action) {
     // Global authorizations supercede namespace level
-    if (authorizeUser(user, action)) {
+    if (authorize(user, action)) {
       return true;
     }
     // Check namespace permissions
@@ -427,14 +430,6 @@ public class TableAuthManager {
     }
 
     return false;
-  }
-
-  /**
-   * Checks global authorization for a specific action for a user, based on the
-   * stored user permissions.
-   */
-  public boolean authorizeUser(User user, Permission.Action action) {
-    return authorize(globalCache.getUser(user.getShortName()), action);
   }
 
   /**
@@ -488,20 +483,26 @@ public class TableAuthManager {
    * permissions.
    */
   public boolean authorizeGroup(String groupName, Permission.Action action) {
-    return authorize(globalCache.getGroup(groupName), action);
+    List<Permission> perms = globalCache.getGroup(groupName);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("authorizing " + (perms != null && !perms.isEmpty() ? perms.get(0) : "") +
+        " for " + action);
+    }
+    return authorize(perms, action);
   }
 
   /**
-   * Checks authorization to a given table and column family for a group, based
+   * Checks authorization to a given table, column family and column for a group, based
    * on the stored permissions.
    * @param groupName
    * @param table
    * @param family
+   * @param qualifier
    * @param action
    * @return true if known and authorized, false otherwise
    */
   public boolean authorizeGroup(String groupName, TableName table, byte[] family,
-      Permission.Action action) {
+      byte[] qualifier, Permission.Action action) {
     // Global authorization supercedes table level
     if (authorizeGroup(groupName, action)) {
       return true;
@@ -513,7 +514,13 @@ public class TableAuthManager {
       return true;
     }
     // Check table level
-    return authorize(getTablePermissions(table).getGroup(groupName), table, family, action);
+    List<TablePermission> tblPerms = getTablePermissions(table).getGroup(groupName);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("authorizing " + (tblPerms != null && !tblPerms.isEmpty() ? tblPerms.get(0) : "") +
+        " for " +groupName + " on " + table + "." + Bytes.toString(family) + "." +
+        Bytes.toString(qualifier) + " with " + action);
+    }
+    return authorize(tblPerms, table, family, qualifier, action);
   }
 
   /**
@@ -548,7 +555,7 @@ public class TableAuthManager {
     String[] groups = user.getGroupNames();
     if (groups != null) {
       for (String group : groups) {
-        if (authorizeGroup(group, table, family, action)) {
+        if (authorizeGroup(group, table, family, qualifier, action)) {
           return true;
         }
       }
@@ -729,7 +736,7 @@ public class TableAuthManager {
   }
 
   public long getMTime() {
-    return mtime;
+    return mtime.get();
   }
 
   static Map<ZooKeeperWatcher,TableAuthManager> managerMap =

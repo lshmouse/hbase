@@ -19,6 +19,7 @@ package org.apache.hadoop.hbase.regionserver;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -29,10 +30,12 @@ import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HDFSBlocksDistribution;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.io.hfile.BlockCache;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.io.hfile.CacheStats;
+import org.apache.hadoop.hbase.wal.BoundedRegionGroupingProvider;
 import org.apache.hadoop.hbase.wal.DefaultWALProvider;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSUtils;
@@ -47,7 +50,7 @@ import org.apache.hadoop.metrics2.MetricsExecutor;
 class MetricsRegionServerWrapperImpl
     implements MetricsRegionServerWrapper {
 
-  public static final Log LOG = LogFactory.getLog(MetricsRegionServerWrapperImpl.class);
+  private static final Log LOG = LogFactory.getLog(MetricsRegionServerWrapperImpl.class);
 
   private final HRegionServer regionServer;
 
@@ -70,6 +73,7 @@ class MetricsRegionServerWrapperImpl
   private volatile long numMutationsWithoutWAL = 0;
   private volatile long dataInMemoryWithoutWAL = 0;
   private volatile int percentFileLocal = 0;
+  private volatile int percentFileLocalSecondaryRegions = 0;
   private volatile long flushedCellsCount = 0;
   private volatile long compactedCellsCount = 0;
   private volatile long majorCompactedCellsCount = 0;
@@ -166,7 +170,7 @@ class MetricsRegionServerWrapperImpl
 
   @Override
   public long getNumOnlineRegions() {
-    Collection<HRegion> onlineRegionsLocalContext = regionServer.getOnlineRegionsLocalContext();
+    Collection<Region> onlineRegionsLocalContext = regionServer.getOnlineRegionsLocalContext();
     if (onlineRegionsLocalContext == null) {
       return 0;
     }
@@ -375,6 +379,11 @@ class MetricsRegionServerWrapperImpl
   }
 
   @Override
+  public int getPercentFileLocalSecondaryRegions() {
+    return percentFileLocalSecondaryRegions;
+  }
+
+  @Override
   public long getUpdatesBlockedTime() {
     if (this.regionServer.cacheFlusher == null) {
       return 0;
@@ -429,6 +438,8 @@ class MetricsRegionServerWrapperImpl
 
       HDFSBlocksDistribution hdfsBlocksDistribution =
           new HDFSBlocksDistribution();
+      HDFSBlocksDistribution hdfsBlocksDistributionSecondaryRegions =
+          new HDFSBlocksDistribution();
 
       long tempNumStores = 0;
       long tempNumStoreFiles = 0;
@@ -444,6 +455,7 @@ class MetricsRegionServerWrapperImpl
       long tempNumMutationsWithoutWAL = 0;
       long tempDataInMemoryWithoutWAL = 0;
       int tempPercentFileLocal = 0;
+      int tempPercentFileLocalSecondaryRegions = 0;
       long tempFlushedCellsCount = 0;
       long tempCompactedCellsCount = 0;
       long tempMajorCompactedCellsCount = 0;
@@ -452,16 +464,17 @@ class MetricsRegionServerWrapperImpl
       long tempMajorCompactedCellsSize = 0;
       long tempBlockedRequestsCount = 0L;
 
-      for (HRegion r : regionServer.getOnlineRegionsLocalContext()) {
-        tempNumMutationsWithoutWAL += r.numMutationsWithoutWAL.get();
-        tempDataInMemoryWithoutWAL += r.dataInMemoryWithoutWAL.get();
-        tempReadRequestsCount += r.readRequestsCount.get();
-        tempWriteRequestsCount += r.writeRequestsCount.get();
-        tempCheckAndMutateChecksFailed += r.checkAndMutateChecksFailed.get();
-        tempCheckAndMutateChecksPassed += r.checkAndMutateChecksPassed.get();
+      for (Region r : regionServer.getOnlineRegionsLocalContext()) {
+        tempNumMutationsWithoutWAL += r.getNumMutationsWithoutWAL();
+        tempDataInMemoryWithoutWAL += r.getDataInMemoryWithoutWAL();
+        tempReadRequestsCount += r.getReadRequestsCount();
+        tempWriteRequestsCount += r.getWriteRequestsCount();
+        tempCheckAndMutateChecksFailed += r.getCheckAndMutateChecksFailed();
+        tempCheckAndMutateChecksPassed += r.getCheckAndMutateChecksPassed();
         tempBlockedRequestsCount += r.getBlockedRequestsCount();
-        tempNumStores += r.stores.size();
-        for (Store store : r.stores.values()) {
+        List<Store> storeList = r.getStores();
+        tempNumStores += storeList.size();
+        for (Store store : storeList) {
           tempNumStoreFiles += store.getStorefilesCount();
           tempMemstoreSize += store.getMemStoreSize();
           tempStoreFileSize += store.getStorefilesSize();
@@ -476,13 +489,20 @@ class MetricsRegionServerWrapperImpl
           tempMajorCompactedCellsSize += store.getMajorCompactedCellsSize();
         }
 
-        hdfsBlocksDistribution.add(r.getHDFSBlocksDistribution());
+        HDFSBlocksDistribution distro = r.getHDFSBlocksDistribution();
+        hdfsBlocksDistribution.add(distro);
+        if (r.getRegionInfo().getReplicaId() != HRegionInfo.DEFAULT_REPLICA_ID) {
+          hdfsBlocksDistributionSecondaryRegions.add(distro);
+        }
       }
 
       float localityIndex = hdfsBlocksDistribution.getBlockLocalityIndex(
           regionServer.getServerName().getHostname());
       tempPercentFileLocal = (int) (localityIndex * 100);
 
+      float localityIndexSecondaryRegions = hdfsBlocksDistributionSecondaryRegions
+          .getBlockLocalityIndex(regionServer.getServerName().getHostname());
+      tempPercentFileLocalSecondaryRegions = (int) (localityIndexSecondaryRegions * 100);
 
       //Compute the number of requests per second
       long currentTime = EnvironmentEdgeManager.currentTime();
@@ -497,14 +517,16 @@ class MetricsRegionServerWrapperImpl
       //If we've time traveled keep the last requests per second.
       if ((currentTime - lastRan) > 0) {
         long currentRequestCount = getTotalRequestCount();
-        requestsPerSecond = (currentRequestCount - lastRequestCount) / ((currentTime - lastRan) / 1000.0);
+        requestsPerSecond = (currentRequestCount - lastRequestCount) /
+            ((currentTime - lastRan) / 1000.0);
         lastRequestCount = currentRequestCount;
       }
       lastRan = currentTime;
 
-      numWALFiles = DefaultWALProvider.getNumLogFiles(regionServer.walFactory);
-      walFileSize = DefaultWALProvider.getLogFileSize(regionServer.walFactory);
-
+      numWALFiles = DefaultWALProvider.getNumLogFiles(regionServer.walFactory) +
+          BoundedRegionGroupingProvider.getNumLogFiles(regionServer.walFactory);
+      walFileSize = DefaultWALProvider.getLogFileSize(regionServer.walFactory) +
+          BoundedRegionGroupingProvider.getLogFileSize(regionServer.walFactory);
       //Copy over computed values so that no thread sees half computed values.
       numStores = tempNumStores;
       numStoreFiles = tempNumStoreFiles;
@@ -520,6 +542,7 @@ class MetricsRegionServerWrapperImpl
       numMutationsWithoutWAL = tempNumMutationsWithoutWAL;
       dataInMemoryWithoutWAL = tempDataInMemoryWithoutWAL;
       percentFileLocal = tempPercentFileLocal;
+      percentFileLocalSecondaryRegions = tempPercentFileLocalSecondaryRegions;
       flushedCellsCount = tempFlushedCellsCount;
       compactedCellsCount = tempCompactedCellsCount;
       majorCompactedCellsCount = tempMajorCompactedCellsCount;

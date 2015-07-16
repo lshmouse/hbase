@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -30,6 +29,7 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.metrics.ScanMetrics;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.RegionScanner;
@@ -43,15 +43,12 @@ import org.mortbay.log.Log;
 public class ClientSideRegionScanner extends AbstractClientScanner {
 
   private HRegion region;
-  private Scan scan;
   RegionScanner scanner;
   List<Cell> values;
 
   public ClientSideRegionScanner(Configuration conf, FileSystem fs,
-      Path rootDir, HTableDescriptor htd, HRegionInfo hri, Scan scan, ScanMetrics scanMetrics) 
+      Path rootDir, HTableDescriptor htd, HRegionInfo hri, Scan scan, ScanMetrics scanMetrics)
           throws IOException {
-
-    this.scan = scan;
 
     // region is immutable, set isolation level
     scan.setIsolationLevel(IsolationLevel.READ_UNCOMMITTED);
@@ -74,8 +71,7 @@ public class ClientSideRegionScanner extends AbstractClientScanner {
   @Override
   public Result next() throws IOException {
     values.clear();
-
-    scanner.nextRaw(values, -1); // pass -1 as limit so that we see the whole row.
+    scanner.nextRaw(values);
     if (values.isEmpty()) {
       //we are done
       return null;
@@ -112,5 +108,10 @@ public class ClientSideRegionScanner extends AbstractClientScanner {
         Log.warn("Exception while closing region", ex);
       }
     }
+  }
+
+  @Override
+  public boolean renewLease() {
+    throw new UnsupportedOperationException();
   }
 }

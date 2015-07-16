@@ -19,9 +19,16 @@
 
 package org.apache.hadoop.hbase.coprocessor;
 
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Coprocessor;
@@ -32,7 +39,6 @@ import org.apache.hadoop.hbase.client.Append;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Get;
-import org.apache.hadoop.hbase.client.HTableInterface;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
@@ -54,8 +60,6 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-
-import static org.junit.Assert.*;
 
 /**
  * Tests class {@link org.apache.hadoop.hbase.client.HTableWrapper}
@@ -86,7 +90,7 @@ public class TestHTableWrapper {
   static class DummyRegionObserver extends BaseRegionObserver {
   }
 
-  private HTableInterface hTableInterface;
+  private Table hTableInterface;
   private Table table;
 
   @BeforeClass
@@ -144,10 +148,8 @@ public class TestHTableWrapper {
   private void checkHTableInterfaceMethods() throws Exception {
     checkConf();
     checkNameAndDescriptor();
-    checkAutoFlush();
     checkBufferSize();
     checkExists();
-    checkGetRowOrBefore();
     checkAppend();
     checkPutsAndDeletes();
     checkCheckAndPut();
@@ -159,7 +161,6 @@ public class TestHTableWrapper {
     checkMutateRow();
     checkResultScanner();
 
-    hTableInterface.flushCommits();
     hTableInterface.close();
   }
 
@@ -174,15 +175,6 @@ public class TestHTableWrapper {
     assertEquals(table.getTableDescriptor(), hTableInterface.getTableDescriptor());
   }
 
-  private void checkAutoFlush() {
-    boolean initialAutoFlush = hTableInterface.isAutoFlush();
-    hTableInterface.setAutoFlush(false);
-    assertFalse(hTableInterface.isAutoFlush());
-    hTableInterface.setAutoFlush(true);
-    assertTrue(hTableInterface.isAutoFlush());
-    hTableInterface.setAutoFlush(initialAutoFlush);
-  }
-
   private void checkBufferSize() throws IOException {
     long initialWriteBufferSize = hTableInterface.getWriteBufferSize();
     hTableInterface.setWriteBufferSize(12345L);
@@ -194,19 +186,12 @@ public class TestHTableWrapper {
     boolean ex = hTableInterface.exists(new Get(ROW_A).addColumn(TEST_FAMILY, qualifierCol1));
     assertTrue(ex);
 
-    Boolean[] exArray = hTableInterface.exists(Arrays.asList(new Get[] {
-        new Get(ROW_A).addColumn(TEST_FAMILY, qualifierCol1),
-        new Get(ROW_B).addColumn(TEST_FAMILY, qualifierCol1),
-        new Get(ROW_C).addColumn(TEST_FAMILY, qualifierCol1),
-        new Get(Bytes.toBytes("does not exist")).addColumn(TEST_FAMILY, qualifierCol1), }));
-    assertArrayEquals(new Boolean[] { Boolean.TRUE, Boolean.TRUE, Boolean.TRUE, Boolean.FALSE },
-        exArray);
-  }
-
-  @SuppressWarnings("deprecation")
-  private void checkGetRowOrBefore() throws IOException {
-    Result rowOrBeforeResult = hTableInterface.getRowOrBefore(ROW_A, TEST_FAMILY);
-    assertArrayEquals(ROW_A, rowOrBeforeResult.getRow());
+    boolean[] exArray = hTableInterface.existsAll(Arrays.asList(new Get[]{
+      new Get(ROW_A).addColumn(TEST_FAMILY, qualifierCol1),
+      new Get(ROW_B).addColumn(TEST_FAMILY, qualifierCol1),
+      new Get(ROW_C).addColumn(TEST_FAMILY, qualifierCol1),
+      new Get(Bytes.toBytes("does not exist")).addColumn(TEST_FAMILY, qualifierCol1),}));
+    assertTrue(Arrays.equals(new boolean[]{true, true, true, false}, exArray));
   }
 
   private void checkAppend() throws IOException {
@@ -277,9 +262,12 @@ public class TestHTableWrapper {
   }
 
   private void checkBatch() throws IOException, InterruptedException {
-    Object[] results1 = hTableInterface.batch(Arrays.asList(new Row[] {
-        new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L),
-        new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L) }));
+    List<Row> actions =
+        Arrays.asList(new Row[] { new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L),
+            new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L) });
+    Object[] results3 = new Object[actions.size()];
+    Object[] results1 = results3;
+    hTableInterface.batch(actions, results1);
     assertEquals(2, results1.length);
     for (Object r2 : results1) {
       assertTrue(r2 instanceof Result);
@@ -287,8 +275,7 @@ public class TestHTableWrapper {
     checkRowValue(ROW_A, Bytes.toBytes(0L));
     Object[] results2 = new Result[2];
     hTableInterface.batch(
-        Arrays.asList(new Row[] { new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L),
-            new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L) }), results2);
+        actions, results2);
     for (Object r2 : results2) {
       assertTrue(r2 instanceof Result);
     }
@@ -296,15 +283,12 @@ public class TestHTableWrapper {
 
     // with callbacks:
     final long[] updateCounter = new long[] { 0L };
-    Object[] results3 = hTableInterface.batchCallback(
-        Arrays.asList(new Row[] { new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L),
-            new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L) }),
-        new Batch.Callback<Result>() {
-          @Override
-          public void update(byte[] region, byte[] row, Result result) {
-            updateCounter[0]++;
-          }
-        });
+    hTableInterface.batchCallback(actions, results3, new Batch.Callback<Result>() {
+      @Override
+      public void update(byte[] region, byte[] row, Result result) {
+        updateCounter[0]++;
+      }
+    });
     assertEquals(2, updateCounter[0]);
     assertEquals(2, results3.length);
     for (Object r3 : results3) {
@@ -315,8 +299,7 @@ public class TestHTableWrapper {
     Object[] results4 = new Result[2];
     updateCounter[0] = 0L;
     hTableInterface.batchCallback(
-        Arrays.asList(new Row[] { new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L),
-            new Increment(ROW_A).addColumn(TEST_FAMILY, qualifierCol1, 2L) }), results4,
+        actions, results4,
         new Batch.Callback<Result>() {
           @Override
           public void update(byte[] region, byte[] row, Result result) {

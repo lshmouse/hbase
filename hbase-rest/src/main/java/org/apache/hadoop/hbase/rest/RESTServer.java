@@ -127,8 +127,7 @@ public class RESTServer implements Constants {
     // check for user-defined port setting, if so override the conf
     if (commandLine != null && commandLine.hasOption("port")) {
       String val = commandLine.getOptionValue("port");
-      servlet.getConfiguration()
-          .setInt("hbase.rest.port", Integer.valueOf(val));
+      servlet.getConfiguration().setInt("hbase.rest.port", Integer.parseInt(val));
       LOG.debug("port set to " + val);
     }
 
@@ -141,8 +140,7 @@ public class RESTServer implements Constants {
     // check for user-defined info server port setting, if so override the conf
     if (commandLine != null && commandLine.hasOption("infoport")) {
       String val = commandLine.getOptionValue("infoport");
-      servlet.getConfiguration()
-          .setInt("hbase.rest.info.port", Integer.valueOf(val));
+      servlet.getConfiguration().setInt("hbase.rest.info.port", Integer.parseInt(val));
       LOG.debug("Web UI port set to " + val);
     }
 
@@ -203,6 +201,7 @@ public class RESTServer implements Constants {
     }
     connector.setPort(servlet.getConfiguration().getInt("hbase.rest.port", 8080));
     connector.setHost(servlet.getConfiguration().get("hbase.rest.host", "0.0.0.0"));
+    connector.setHeaderBufferSize(8192);
 
     server.addConnector(connector);
 

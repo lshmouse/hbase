@@ -23,14 +23,17 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.Chore;
+import org.apache.hadoop.hbase.ChoreService;
+import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.Stoppable;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
-import org.apache.hadoop.hbase.client.HConnection;
-import org.apache.hadoop.hbase.client.HConnectionManager;
-import org.apache.hadoop.hbase.client.HTableInterface;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
+import org.apache.hadoop.hbase.client.RegionLocator;
+import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -44,7 +47,7 @@ import org.apache.log4j.Logger;
  */
 @InterfaceAudience.Private
 public class ConnectionCache {
-  private static Logger LOG = Logger.getLogger(ConnectionCache.class);
+  private static final Logger LOG = Logger.getLogger(ConnectionCache.class);
 
   private final Map<String, ConnectionInfo>
    connections = new ConcurrentHashMap<String, ConnectionInfo>();
@@ -53,6 +56,7 @@ public class ConnectionCache {
   private final UserGroupInformation realUser;
   private final UserProvider userProvider;
   private final Configuration conf;
+  private final ChoreService choreService;
 
   private final ThreadLocal<String> effectiveUserNames =
       new ThreadLocal<String>() {
@@ -69,8 +73,8 @@ public class ConnectionCache {
       @Override public void stop(String why) { isStopped = true;}
       @Override public boolean isStopped() {return isStopped;}
     };
-
-    Chore cleaner = new Chore("ConnectionCleaner", cleanInterval, stoppable) {
+    this.choreService = new ChoreService("ConnectionCache");
+    ScheduledChore cleaner = new ScheduledChore("ConnectionCleaner", stoppable, cleanInterval) {
       @Override
       protected void chore() {
         for (Map.Entry<String, ConnectionInfo> entry: connections.entrySet()) {
@@ -93,7 +97,7 @@ public class ConnectionCache {
       }
     };
     // Start the daemon cleaner chore
-    Threads.setDaemonThreadRunning(cleaner.getThread());
+    choreService.scheduleChore(cleaner);
     this.realUser = userProvider.getCurrent().getUGI();
     this.realUserName = realUser.getShortUserName();
     this.userProvider = userProvider;
@@ -115,17 +119,23 @@ public class ConnectionCache {
   }
 
   /**
+   * Called when cache is no longer needed so that it can perform cleanup operations
+   */
+  public void shutdown() {
+    if (choreService != null) choreService.shutdown();
+  }
+
+  /**
    * Caller doesn't close the admin afterwards.
    * We need to manage it and close it properly.
    */
-  @SuppressWarnings("deprecation")
-  public HBaseAdmin getAdmin() throws IOException {
+  public Admin getAdmin() throws IOException {
     ConnectionInfo connInfo = getCurrentConnection();
     if (connInfo.admin == null) {
       Lock lock = locker.acquireLock(getEffectiveUser());
       try {
         if (connInfo.admin == null) {
-          connInfo.admin = new HBaseAdmin(connInfo.connection);
+          connInfo.admin = connInfo.connection.getAdmin();
         }
       } finally {
         lock.unlock();
@@ -137,9 +147,16 @@ public class ConnectionCache {
   /**
    * Caller closes the table afterwards.
    */
-  public HTableInterface getTable(String tableName) throws IOException {
+  public Table getTable(String tableName) throws IOException {
     ConnectionInfo connInfo = getCurrentConnection();
-    return connInfo.connection.getTable(tableName);
+    return connInfo.connection.getTable(TableName.valueOf(tableName));
+  }
+
+  /**
+   * Retrieve a regionLocator for the table. The user should close the RegionLocator.
+   */
+  public RegionLocator getRegionLocator(byte[] tableName) throws IOException {
+    return getCurrentConnection().connection.getRegionLocator(TableName.valueOf(tableName));
   }
 
   /**
@@ -159,7 +176,7 @@ public class ConnectionCache {
             ugi = UserGroupInformation.createProxyUser(userName, realUser);
           }
           User user = userProvider.create(ugi);
-          HConnection conn = HConnectionManager.createConnection(conf, user);
+          Connection conn = ConnectionFactory.createConnection(conf, user);
           connInfo = new ConnectionInfo(conn, userName);
           connections.put(userName, connInfo);
         }
@@ -171,14 +188,14 @@ public class ConnectionCache {
   }
 
   class ConnectionInfo {
-    final HConnection connection;
+    final Connection connection;
     final String userName;
 
-    volatile HBaseAdmin admin;
+    volatile Admin admin;
     private long lastAccessTime;
     private boolean closed;
 
-    ConnectionInfo(HConnection conn, String user) {
+    ConnectionInfo(Connection conn, String user) {
       lastAccessTime = EnvironmentEdgeManager.currentTime();
       connection = conn;
       closed = false;
@@ -203,6 +220,7 @@ public class ConnectionCache {
       if (EnvironmentEdgeManager.currentTime() > timeoutTime) {
         connections.remove(userName);
         closed = true;
+        return true;
       }
       return false;
     }

@@ -20,9 +20,12 @@
 
 package org.apache.hadoop.hbase;
 
+import java.util.List;
+
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos;
+import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos.StoreSequenceId;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Strings;
 
@@ -154,6 +157,13 @@ public class RegionLoad {
   }
 
   /**
+   * @return completed sequence id per store.
+   */
+  public List<StoreSequenceId> getStoreCompleteSequenceId() {
+    return regionLoadPB.getStoreCompleteSequenceIdList();
+  }
+
+  /**
    * @return the uncompressed size of the storefiles in MB.
    */
   public int getStoreUncompressedSizeMB() {
@@ -169,6 +179,14 @@ public class RegionLoad {
     }
     return 0.0f;
   }
+
+  /**
+   * @return the timestamp of the oldest hfile for any store of this region.
+   */
+  public long getLastMajorCompactionTs() {
+    return regionLoadPB.getLastMajorCompactionTs();
+  }
+
   /**
    * @see java.lang.Object#toString()
    */
@@ -179,7 +197,9 @@ public class RegionLoad {
     sb = Strings.appendKeyValue(sb, "numberOfStorefiles",
         this.getStorefiles());
     sb = Strings.appendKeyValue(sb, "storefileUncompressedSizeMB",
-        this.getStoreUncompressedSizeMB());
+      this.getStoreUncompressedSizeMB());
+    sb = Strings.appendKeyValue(sb, "lastMajorCompactionTimestamp",
+      this.getLastMajorCompactionTs());
     sb = Strings.appendKeyValue(sb, "storefileSizeMB",
         this.getStorefileSizeMB());
     if (this.getStoreUncompressedSizeMB() != 0) {

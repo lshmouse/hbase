@@ -21,8 +21,9 @@ package org.apache.hadoop.hbase.zookeeper;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 
@@ -31,13 +32,18 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.ZooKeeperConnectionException;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooDefs.Ids;
+import org.apache.zookeeper.ZooDefs.Perms;
 import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Id;
+import org.apache.zookeeper.data.Stat;
 
 /**
  * Acts as the single ZooKeeper Watcher.  One instance of this is instantiated
@@ -82,8 +88,8 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
 
   // base znode for this cluster
   public String baseZNode;
-  // znode containing location of server hosting meta region
-  public String metaServerZNode;
+  //znodes containing the locations of the servers hosting the meta replicas
+  private Map<Integer,String> metaReplicaZnodes = new HashMap<Integer, String>();
   // znode containing ephemeral nodes of the regionservers
   public String rsZNode;
   // znode containing ephemeral nodes of the draining regionservers
@@ -110,6 +116,7 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   // znode containing namespace descriptors
   public static String namespaceZNode = "namespace";
 
+  public final static String META_ZNODE_PREFIX = "meta-region-server";
 
   private final Configuration conf;
 
@@ -179,6 +186,109 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
     }
   }
 
+  /** Returns whether the znode is supposed to be readable by the client
+   * and DOES NOT contain sensitive information (world readable).*/
+  public boolean isClientReadable(String node) {
+    // Developer notice: These znodes are world readable. DO NOT add more znodes here UNLESS
+    // all clients need to access this data to work. Using zk for sharing data to clients (other
+    // than service lookup case is not a recommended design pattern.
+    return
+        node.equals(baseZNode) ||
+        isAnyMetaReplicaZnode(node) ||
+        node.equals(getMasterAddressZNode()) ||
+        node.equals(clusterIdZNode)||
+        node.equals(rsZNode) ||
+        // /hbase/table and /hbase/table/foo is allowed, /hbase/table-lock is not
+        node.equals(tableZNode) ||
+        node.startsWith(tableZNode + "/");
+  }
+
+  /**
+   * On master start, we check the znode ACLs under the root directory and set the ACLs properly
+   * if needed. If the cluster goes from an unsecure setup to a secure setup, this step is needed
+   * so that the existing znodes created with open permissions are now changed with restrictive
+   * perms.
+   */
+  public void checkAndSetZNodeAcls() {
+    if (!ZKUtil.isSecureZooKeeper(getConfiguration())) {
+      return;
+    }
+
+    // Check the base znodes permission first. Only do the recursion if base znode's perms are not
+    // correct.
+    try {
+      List<ACL> actualAcls = recoverableZooKeeper.getAcl(baseZNode, new Stat());
+
+      if (!isBaseZnodeAclSetup(actualAcls)) {
+        LOG.info("setting znode ACLs");
+        setZnodeAclsRecursive(baseZNode);
+      }
+    } catch(KeeperException.NoNodeException nne) {
+      return;
+    } catch(InterruptedException ie) {
+      interruptedException(ie);
+    } catch (IOException|KeeperException e) {
+      LOG.warn("Received exception while checking and setting zookeeper ACLs", e);
+    }
+  }
+
+  /**
+   * Set the znode perms recursively. This will do post-order recursion, so that baseZnode ACLs
+   * will be set last in case the master fails in between.
+   * @param znode
+   */
+  private void setZnodeAclsRecursive(String znode) throws KeeperException, InterruptedException {
+    List<String> children = recoverableZooKeeper.getChildren(znode, false);
+
+    for (String child : children) {
+      setZnodeAclsRecursive(ZKUtil.joinZNode(znode, child));
+    }
+    List<ACL> acls = ZKUtil.createACL(this, znode, true);
+    LOG.info("Setting ACLs for znode:" + znode + " , acl:" + acls);
+    recoverableZooKeeper.setAcl(znode, acls, -1);
+  }
+
+  /**
+   * Checks whether the ACLs returned from the base znode (/hbase) is set for secure setup.
+   * @param acls acls from zookeeper
+   * @return whether ACLs are set for the base znode
+   * @throws IOException
+   */
+  private boolean isBaseZnodeAclSetup(List<ACL> acls) throws IOException {
+    String superUser = conf.get("hbase.superuser");
+
+    // this assumes that current authenticated user is the same as zookeeper client user
+    // configured via JAAS
+    String hbaseUser = UserGroupInformation.getCurrentUser().getShortUserName();
+
+    if (acls.isEmpty()) {
+      return false;
+    }
+
+    for (ACL acl : acls) {
+      int perms = acl.getPerms();
+      Id id = acl.getId();
+      // We should only set at most 3 possible ACLs for 3 Ids. One for everyone, one for superuser
+      // and one for the hbase user
+      if (Ids.ANYONE_ID_UNSAFE.equals(id)) {
+        if (perms != Perms.READ) {
+          return false;
+        }
+      } else if (superUser != null && new Id("sasl", superUser).equals(id)) {
+        if (perms != Perms.ALL) {
+          return false;
+        }
+      } else if (new Id("sasl", hbaseUser).equals(id)) {
+        if (perms != Perms.ALL) {
+          return false;
+        }
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+
   @Override
   public String toString() {
     return this.identifier + ", quorum=" + quorum + ", baseZNode=" + baseZNode;
@@ -200,8 +310,15 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   private void setNodeNames(Configuration conf) {
     baseZNode = conf.get(HConstants.ZOOKEEPER_ZNODE_PARENT,
         HConstants.DEFAULT_ZOOKEEPER_ZNODE_PARENT);
-    metaServerZNode = ZKUtil.joinZNode(baseZNode,
-        conf.get("zookeeper.znode.metaserver", "meta-region-server"));
+    metaReplicaZnodes.put(0, ZKUtil.joinZNode(baseZNode,
+           conf.get("zookeeper.znode.metaserver", "meta-region-server")));
+    int numMetaReplicas = conf.getInt(HConstants.META_REPLICAS_NUM,
+            HConstants.DEFAULT_META_REPLICA_NUM);
+    for (int i = 1; i < numMetaReplicas; i++) {
+      String str = ZKUtil.joinZNode(baseZNode,
+        conf.get("zookeeper.znode.metaserver", "meta-region-server") + "-" + i);
+      metaReplicaZnodes.put(i, str);
+    }
     rsZNode = ZKUtil.joinZNode(baseZNode,
         conf.get("zookeeper.znode.rs", "rs"));
     drainingZNode = ZKUtil.joinZNode(baseZNode,
@@ -226,6 +343,75 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
         conf.get("zookeeper.znode.recovering.regions", "recovering-regions"));
     namespaceZNode = ZKUtil.joinZNode(baseZNode,
         conf.get("zookeeper.znode.namespace", "namespace"));
+  }
+
+  /**
+   * Is the znode of any meta replica
+   * @param node
+   * @return true or false
+   */
+  public boolean isAnyMetaReplicaZnode(String node) {
+    if (metaReplicaZnodes.values().contains(node)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Is it the default meta replica's znode
+   * @param node
+   * @return true or false
+   */
+  public boolean isDefaultMetaReplicaZnode(String node) {
+    if (getZNodeForReplica(HRegionInfo.DEFAULT_REPLICA_ID).equals(node)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get the znodes corresponding to the meta replicas from ZK
+   * @return list of znodes
+   * @throws KeeperException
+   */
+  public List<String> getMetaReplicaNodes() throws KeeperException {
+    List<String> childrenOfBaseNode = ZKUtil.listChildrenNoWatch(this, baseZNode);
+    List<String> metaReplicaNodes = new ArrayList<String>(2);
+    String pattern = conf.get("zookeeper.znode.metaserver","meta-region-server");
+    for (String child : childrenOfBaseNode) {
+      if (child.startsWith(pattern)) metaReplicaNodes.add(child);
+    }
+    return metaReplicaNodes;
+  }
+
+  /**
+   * Get the znode string corresponding to a replicaId
+   * @param replicaId
+   * @return znode
+   */
+  public String getZNodeForReplica(int replicaId) {
+    String str = metaReplicaZnodes.get(replicaId);
+    // return a newly created path but don't update the cache of paths
+    // This is mostly needed for tests that attempt to create meta replicas
+    // from outside the master
+    if (str == null) {
+      str = ZKUtil.joinZNode(baseZNode,
+          conf.get("zookeeper.znode.metaserver", "meta-region-server") + "-" + replicaId);
+    }
+    return str;
+  }
+
+  /**
+   * Parse the meta replicaId from the passed znode
+   * @param znode
+   * @return replicaId
+   */
+  public int getMetaReplicaIdFromZnode(String znode) {
+    String pattern = conf.get("zookeeper.znode.metaserver","meta-region-server");
+    if (znode.equals(pattern)) return HRegionInfo.DEFAULT_REPLICA_ID;
+    // the non-default replicas are of the pattern meta-region-server-<replicaId>
+    String nonDefaultPattern = pattern + "-";
+    return Integer.parseInt(znode.substring(nonDefaultPattern.length()));
   }
 
   /**
@@ -288,6 +474,13 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
    */
   public String getQuorum() {
     return quorum;
+  }
+
+  /**
+   * @return the base znode of this zookeeper connection instance.
+   */
+  public String getBaseZNode() {
+    return baseZNode;
   }
 
   /**
@@ -463,8 +656,8 @@ public class ZooKeeperWatcher implements Watcher, Abortable, Closeable {
   /**
    * Close the connection to ZooKeeper.
    *
-   * @throws InterruptedException
    */
+  @Override
   public void close() {
     try {
       if (recoverableZooKeeper != null) {

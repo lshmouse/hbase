@@ -34,6 +34,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
@@ -46,6 +47,7 @@ import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
@@ -75,7 +77,7 @@ import org.junit.experimental.categories.Category;
  */
 @Category({MiscTests.class, LargeTests.class})
 public class OfflineMetaRebuildTestCore {
-  protected final static Log LOG = LogFactory
+  private final static Log LOG = LogFactory
       .getLog(OfflineMetaRebuildTestCore.class);
   protected HBaseTestingUtility TEST_UTIL;
   protected Configuration conf;
@@ -182,10 +184,14 @@ public class OfflineMetaRebuildTestCore {
     HTableDescriptor htd = tbl.getTableDescriptor();
     dumpMeta(htd);
 
-    Map<HRegionInfo, ServerName> hris = ((HTable)tbl).getRegionLocations();
-    for (Entry<HRegionInfo, ServerName> e : hris.entrySet()) {
-      HRegionInfo hri = e.getKey();
-      ServerName hsa = e.getValue();
+    List<HRegionLocation> regions;
+    try(RegionLocator rl = connection.getRegionLocator(tbl.getName())) {
+      regions = rl.getAllRegionLocations();
+    }
+
+    for (HRegionLocation e : regions) {
+      HRegionInfo hri = e.getRegionInfo();
+      ServerName hsa = e.getServerName();
       if (Bytes.compareTo(hri.getStartKey(), startKey) == 0
           && Bytes.compareTo(hri.getEndKey(), endKey) == 0) {
 
@@ -285,16 +291,9 @@ public class OfflineMetaRebuildTestCore {
    * @return # of entries in meta.
    */
   protected int scanMeta() throws IOException {
-    int count = 0;
-    Table meta = TEST_UTIL.getConnection().getTable(TableName.META_TABLE_NAME);
-    ResultScanner scanner = meta.getScanner(new Scan());
-    LOG.info("Table: " + meta.getName());
-    for (Result res : scanner) {
-      LOG.info(Bytes.toString(res.getRow()));
-      count++;
-    }
-    meta.close();
-    return count;
+    LOG.info("Scanning META");
+    MetaTableAccessor.fullScanMetaAndPrint(TEST_UTIL.getConnection());
+    return MetaTableAccessor.fullScanRegions(TEST_UTIL.getConnection()).size();
   }
 
   protected HTableDescriptor[] getTables(final Configuration configuration) throws IOException {

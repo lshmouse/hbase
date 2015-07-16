@@ -17,6 +17,7 @@
  */
 
 // This file contains protocol buffers that are used for RegionServerStatusProtocol.
+package hbase.pb;
 
 option java_package = "org.apache.hadoop.hbase.protobuf.generated";
 option java_outer_classname = "RegionServerStatusProtos";
@@ -36,6 +37,9 @@ message RegionServerStartupRequest {
 
   /** Current time of the region server in ms */
   required uint64 server_current_time = 3;
+
+  /** hostname for region server, optional */
+  optional string use_this_hostname_instead = 4;
 }
 
 message RegionServerStartupResponse {
@@ -74,8 +78,11 @@ message GetLastFlushedSequenceIdRequest {
 }
 
 message GetLastFlushedSequenceIdResponse {
-  /* the last WAL sequence id flushed from MemStore to HFile for the region */
+  /** the last WAL sequence id flushed from MemStore to HFile for the region */
   required uint64 last_flushed_sequence_id = 1;
+
+  /** the last WAL sequence id flushed from MemStore to HFile for stores of the region */
+  repeated StoreSequenceId store_last_flushed_sequence_id = 2;
 }
 
 message RegionStateTransition {

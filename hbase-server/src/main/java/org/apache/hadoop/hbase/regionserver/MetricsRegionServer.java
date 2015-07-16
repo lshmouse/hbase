@@ -22,9 +22,10 @@ import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
 
 /**
+ * <p>
  * This class is for maintaining the various regionserver statistics
  * and publishing them through the metrics interfaces.
- * <p/>
+ * </p>
  * This class has a number of metrics variables that are publicly accessible;
  * these variables (objects) have methods to update their values.
  */
@@ -93,6 +94,10 @@ public class MetricsRegionServer {
 
   public void updateReplay(long t){
     serverSource.updateReplay(t);
+  }
+
+  public void updateScannerNext(long scanSize){
+    serverSource.updateScannerNext(scanSize);
   }
 
   public void updateSplitTime(long t) {

@@ -31,19 +31,17 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.Chore;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MetaTableAccessor;
+import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.HFileArchiver;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.MetaScanner;
-import org.apache.hadoop.hbase.client.MetaScanner.MetaScannerVisitor;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -57,7 +55,7 @@ import org.apache.hadoop.hbase.util.Triple;
  * table on a period looking for unused regions to garbage collect.
  */
 @InterfaceAudience.Private
-public class CatalogJanitor extends Chore {
+public class CatalogJanitor extends ScheduledChore {
   private static final Log LOG = LogFactory.getLog(CatalogJanitor.class.getName());
   private final Server server;
   private final MasterServices services;
@@ -66,9 +64,8 @@ public class CatalogJanitor extends Chore {
   private final Connection connection;
 
   CatalogJanitor(final Server server, final MasterServices services) {
-    super("CatalogJanitor-" + server.getServerName().toShortString(),
-      server.getConfiguration().getInt("hbase.catalogjanitor.interval", 300000),
-      server);
+    super("CatalogJanitor-" + server.getServerName().toShortString(), server, server
+        .getConfiguration().getInt("hbase.catalogjanitor.interval", 300000));
     this.server = server;
     this.services = services;
     this.connection = server.getConnection();
@@ -143,9 +140,9 @@ public class CatalogJanitor extends Chore {
     final Map<HRegionInfo, Result> mergedRegions = new TreeMap<HRegionInfo, Result>();
     // This visitor collects split parents and counts rows in the hbase:meta table
 
-    MetaScannerVisitor visitor = new MetaScanner.MetaScannerVisitorBase() {
+    MetaTableAccessor.Visitor visitor = new MetaTableAccessor.Visitor() {
       @Override
-      public boolean processRow(Result r) throws IOException {
+      public boolean visit(Result r) throws IOException {
         if (r == null || r.isEmpty()) return true;
         count.incrementAndGet();
         HRegionInfo info = HRegionInfo.getHRegionInfo(r);
@@ -166,7 +163,7 @@ public class CatalogJanitor extends Chore {
 
     // Run full scan of hbase:meta catalog table passing in our custom visitor with
     // the start row
-    MetaScanner.metaScan(this.connection, visitor, tableName);
+    MetaTableAccessor.scanMetaForTableRegions(this.connection, visitor, tableName);
 
     return new Triple<Integer, Map<HRegionInfo, Result>, Map<HRegionInfo, Result>>(
         count.get(), mergedRegions, splitParents);
@@ -370,14 +367,27 @@ public class CatalogJanitor extends Chore {
     Path rootdir = this.services.getMasterFileSystem().getRootDir();
     Path tabledir = FSUtils.getTableDir(rootdir, daughter.getTable());
 
+    Path daughterRegionDir = new Path(tabledir, daughter.getEncodedName());
+
     HRegionFileSystem regionFs = null;
+
+    try {
+      if (!FSUtils.isExists(fs, daughterRegionDir)) {
+        return new Pair<Boolean, Boolean>(Boolean.FALSE, Boolean.FALSE);
+      }
+    } catch (IOException ioe) {
+      LOG.warn("Error trying to determine if daughter region exists, " +
+               "assuming exists and has references", ioe);
+      return new Pair<Boolean, Boolean>(Boolean.TRUE, Boolean.TRUE);
+    }
+
     try {
       regionFs = HRegionFileSystem.openRegionFromFileSystem(
           this.services.getConfiguration(), fs, tabledir, daughter, true);
     } catch (IOException e) {
-      LOG.warn("Daughter region does not exist: " + daughter.getEncodedName()
-        + ", parent is: " + parent.getEncodedName());
-      return new Pair<Boolean, Boolean>(Boolean.FALSE, Boolean.FALSE);
+      LOG.warn("Error trying to determine referenced files from : " + daughter.getEncodedName()
+          + ", to: " + parent.getEncodedName() + " assuming has references", e);
+      return new Pair<Boolean, Boolean>(Boolean.TRUE, Boolean.TRUE);
     }
 
     boolean references = false;

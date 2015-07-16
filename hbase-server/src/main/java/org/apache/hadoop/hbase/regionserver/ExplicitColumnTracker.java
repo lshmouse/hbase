@@ -22,10 +22,11 @@ import java.io.IOException;
 import java.util.NavigableSet;
 
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.regionserver.ScanQueryMatcher.MatchCode;
-import org.apache.hadoop.hbase.util.Bytes;
 
 /**
  * This class is used for the tracking and enforcement of columns and numbers
@@ -40,9 +41,10 @@ import org.apache.hadoop.hbase.util.Bytes;
  * <p>
  * This class is utilized by {@link ScanQueryMatcher} mainly through two methods:
  * <ul><li>{@link #checkColumn} is called when a Put satisfies all other
- * conditions of the query.
- * <ul><li>{@link #getNextRowOrNextColumn} is called whenever ScanQueryMatcher
- * believes that the current column should be skipped (by timestamp, filter etc.)
+ * conditions of the query.</li>
+ * <li>{@link #getNextRowOrNextColumn} is called whenever ScanQueryMatcher
+ * believes that the current column should be skipped (by timestamp, filter etc.)</li>
+ * </ul>
  * <p>
  * These two methods returns a 
  * {@link org.apache.hadoop.hbase.regionserver.ScanQueryMatcher.MatchCode}
@@ -56,10 +58,6 @@ public class ExplicitColumnTracker implements ColumnTracker {
   private final int maxVersions;
   private final int minVersions;
 
-  // hint for the tracker about how many KVs we will attempt to search via next()
-  // before we schedule a (re)seek operation
-  private final int lookAhead; 
-
  /**
   * Contains the list of columns that the ExplicitColumnTracker is tracking.
   * Each ColumnCount instance also tracks how many versions of the requested
@@ -72,7 +70,6 @@ public class ExplicitColumnTracker implements ColumnTracker {
    * Used to eliminate duplicates. */
   private long latestTSOfCurrentColumn;
   private long oldestStamp;
-  private int skipCount;
 
   /**
    * Default constructor.
@@ -81,14 +78,11 @@ public class ExplicitColumnTracker implements ColumnTracker {
    * @param maxVersions maximum versions to return per column
    * @param oldestUnexpiredTS the oldest timestamp we are interested in,
    *  based on TTL 
-   * @param lookAhead number of KeyValues to look ahead via next before
-   *  (re)seeking
    */
   public ExplicitColumnTracker(NavigableSet<byte[]> columns, int minVersions,
-      int maxVersions, long oldestUnexpiredTS, int lookAhead) {
+      int maxVersions, long oldestUnexpiredTS) {
     this.maxVersions = maxVersions;
     this.minVersions = minVersions;
-    this.lookAhead = lookAhead;
     this.oldestStamp = oldestUnexpiredTS;
     this.columns = new ColumnCount[columns.size()];
     int i=0;
@@ -113,8 +107,7 @@ public class ExplicitColumnTracker implements ColumnTracker {
    * {@inheritDoc}
    */
   @Override
-  public ScanQueryMatcher.MatchCode checkColumn(byte [] bytes, int offset,
-      int length, byte type) {
+  public ScanQueryMatcher.MatchCode checkColumn(Cell cell, byte type) {
     // delete markers should never be passed to an
     // *Explicit*ColumnTracker
     assert !CellUtil.isDelete(type);
@@ -130,31 +123,29 @@ public class ExplicitColumnTracker implements ColumnTracker {
       }
 
       // Compare specific column to current column
-      int ret = Bytes.compareTo(column.getBuffer(), column.getOffset(),
-          column.getLength(), bytes, offset, length);
+      int ret = CellComparator.compareQualifiers(cell, column.getBuffer(), column.getOffset(),
+          column.getLength());
 
       // Column Matches. Return include code. The caller would call checkVersions
       // to limit the number of versions.
-      if(ret == 0) {
+      if (ret == 0) {
         return ScanQueryMatcher.MatchCode.INCLUDE;
       }
 
       resetTS();
 
-      if (ret > 0) {
+      if (ret < 0) {
         // The current KV is smaller than the column the ExplicitColumnTracker
         // is interested in, so seek to that column of interest.
-        return this.skipCount++ < this.lookAhead ? ScanQueryMatcher.MatchCode.SKIP
-            : ScanQueryMatcher.MatchCode.SEEK_NEXT_COL;
+        return ScanQueryMatcher.MatchCode.SEEK_NEXT_COL;
       }
 
       // The current KV is bigger than the column the ExplicitColumnTracker
       // is interested in. That means there is no more data for the column
       // of interest. Advance the ExplicitColumnTracker state to next
       // column of interest, and check again.
-      if (ret <= -1) {
+      if (ret > 0) {
         ++this.index;
-        this.skipCount = 0;
         if (done()) {
           // No more to match, do not include, done with this row.
           return ScanQueryMatcher.MatchCode.SEEK_NEXT_ROW; // done_row
@@ -166,7 +157,7 @@ public class ExplicitColumnTracker implements ColumnTracker {
   }
 
   @Override
-  public ScanQueryMatcher.MatchCode checkVersions(byte[] bytes, int offset, int length,
+  public ScanQueryMatcher.MatchCode checkVersions(Cell cell,
       long timestamp, byte type, boolean ignoreCount) throws IOException {
     assert !CellUtil.isDelete(type);
     if (ignoreCount) return ScanQueryMatcher.MatchCode.INCLUDE;
@@ -179,7 +170,6 @@ public class ExplicitColumnTracker implements ColumnTracker {
     if (count >= maxVersions || (count >= minVersions && isExpired(timestamp))) {
       // Done with versions for this column
       ++this.index;
-      this.skipCount = 0;
       resetTS();
       if (done()) {
         // We have served all the requested columns.
@@ -198,7 +188,6 @@ public class ExplicitColumnTracker implements ColumnTracker {
   // Called between every row.
   public void reset() {
     this.index = 0;
-    this.skipCount = 0;
     this.column = this.columns[this.index];
     for(ColumnCount col : this.columns) {
       col.setCount(0);
@@ -227,34 +216,30 @@ public class ExplicitColumnTracker implements ColumnTracker {
    * this column. We may get this information from external filters or
    * timestamp range and we then need to indicate this information to
    * tracker. It is required only in case of ExplicitColumnTracker.
-   * @param bytes
-   * @param offset
-   * @param length
+   * @param cell
    */
-  public void doneWithColumn(byte [] bytes, int offset, int length) {
+  public void doneWithColumn(Cell cell) {
     while (this.column != null) {
-      int compare = Bytes.compareTo(column.getBuffer(), column.getOffset(),
-          column.getLength(), bytes, offset, length);
+      int compare = CellComparator.compareQualifiers(cell, column.getBuffer(), column.getOffset(),
+          column.getLength());
       resetTS();
-      if (compare <= 0) {
+      if (compare >= 0) {
         ++this.index;
-        this.skipCount = 0;
         if (done()) {
           // Will not hit any more columns in this storefile
           this.column = null;
         } else {
           this.column = this.columns[this.index];
         }
-        if (compare <= -1)
-          continue;
+        if (compare > 0) continue;
       }
       return;
     }
   }
 
-  public MatchCode getNextRowOrNextColumn(byte[] bytes, int offset,
-      int qualLength) {
-    doneWithColumn(bytes, offset,qualLength);
+  @Override
+  public MatchCode getNextRowOrNextColumn(Cell cell) {
+    doneWithColumn(cell);
 
     if (getColumnHint() == null) {
       return MatchCode.SEEK_NEXT_ROW;

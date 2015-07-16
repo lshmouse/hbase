@@ -41,7 +41,7 @@ import org.apache.hadoop.hbase.HTableDescriptor;
 @InterfaceAudience.Private
 public class IncreasingToUpperBoundRegionSplitPolicy
 extends ConstantSizeRegionSplitPolicy {
-  static final Log LOG =
+  private static final Log LOG =
     LogFactory.getLog(IncreasingToUpperBoundRegionSplitPolicy.class);
   private long initialSize;
 
@@ -72,7 +72,7 @@ extends ConstantSizeRegionSplitPolicy {
     // Get size to check
     long sizeToCheck = getSizeToCheck(tableRegionsCount);
 
-    for (Store store : region.getStores().values()) {
+    for (Store store : region.getStores()) {
       // If any of the stores is unable to split (eg they contain reference files)
       // then don't split
       if ((!store.canSplit())) {
@@ -93,8 +93,8 @@ extends ConstantSizeRegionSplitPolicy {
   }
 
   /**
-   * @return Region max size or <code>count of regions squared * flushsize, which ever is
-   * smaller; guard against there being zero regions on this server.
+   * @return Region max size or <code>count of regions squared * flushsize</code>,
+   * which ever is smaller; guard against there being zero regions on this server.
    */
   protected long getSizeToCheck(final int tableRegionsCount) {
     // safety check for 100 to avoid numerical overflow in extreme cases
@@ -114,7 +114,7 @@ extends ConstantSizeRegionSplitPolicy {
     TableName tablename = this.region.getTableDesc().getTableName();
     int tableRegionsCount = 0;
     try {
-      List<HRegion> hri = rss.getOnlineRegions(tablename);
+      List<Region> hri = rss.getOnlineRegions(tablename);
       tableRegionsCount = hri == null || hri.isEmpty()? 0: hri.size();
     } catch (IOException e) {
       LOG.debug("Failed getOnlineRegions " + tablename, e);

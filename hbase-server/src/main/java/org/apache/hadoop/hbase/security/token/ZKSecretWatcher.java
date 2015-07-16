@@ -38,7 +38,7 @@ import org.apache.zookeeper.KeeperException;
 public class ZKSecretWatcher extends ZooKeeperListener {
   private static final String DEFAULT_ROOT_NODE = "tokenauth";
   private static final String DEFAULT_KEYS_PARENT = "keys";
-  private static Log LOG = LogFactory.getLog(ZKSecretWatcher.class);
+  private static final Log LOG = LogFactory.getLog(ZKSecretWatcher.class);
 
   private AuthenticationTokenSecretManager secretManager;
   private String baseKeyZNode;
@@ -85,7 +85,7 @@ public class ZKSecretWatcher extends ZooKeeperListener {
     if (keysParentZNode.equals(ZKUtil.getParent(path))) {
       String keyId = ZKUtil.getNodeName(path);
       try {
-        Integer id = new Integer(keyId);
+        Integer id = Integer.valueOf(keyId);
         secretManager.removeKey(id);
       } catch (NumberFormatException nfe) {
         LOG.error("Invalid znode name for key ID '"+keyId+"'", nfe);

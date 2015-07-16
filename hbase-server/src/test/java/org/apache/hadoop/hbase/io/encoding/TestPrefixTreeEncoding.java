@@ -36,6 +36,8 @@ import java.util.concurrent.ConcurrentSkipListSet;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.Tag;
@@ -70,10 +72,10 @@ public class TestPrefixTreeEncoding {
 
   private int numBatchesWritten = 0;
   private ConcurrentSkipListSet<Cell> kvset = new ConcurrentSkipListSet<Cell>(
-      KeyValue.COMPARATOR);
+      CellComparator.COMPARATOR);
 
   private static boolean formatRowNum = false;
-  
+
   @Parameters
   public static Collection<Object[]> parameters() {
     List<Object[]> paramList = new ArrayList<Object[]>();
@@ -87,7 +89,7 @@ public class TestPrefixTreeEncoding {
   public TestPrefixTreeEncoding(boolean includesTag) {
     this.includesTag = includesTag;
   }
- 
+
   @Before
   public void setUp() throws Exception {
     kvset.clear();
@@ -110,7 +112,7 @@ public class TestPrefixTreeEncoding {
     DataOutputStream userDataStream = new DataOutputStream(baosInMemory);
     generateFixedTestData(kvset, batchId, false, includesTag, encoder, blkEncodingCtx,
         userDataStream);
-    EncodedSeeker seeker = encoder.createSeeker(KeyValue.COMPARATOR,
+    EncodedSeeker seeker = encoder.createSeeker(CellComparator.COMPARATOR,
         encoder.newDataBlockDecodingContext(meta));
     byte[] onDiskBytes = baosInMemory.toByteArray();
     ByteBuffer readBuffer = ByteBuffer.wrap(onDiskBytes, DataBlockEncoding.ID_SIZE,
@@ -131,7 +133,8 @@ public class TestPrefixTreeEncoding {
         new KeyValue.KeyOnlyKeyValue(seekKey.getBuffer(), seekKey.getKeyOffset(), seekKey
             .getKeyLength()), true);
     assertNotNull(seeker.getKeyValue());
-    assertArrayEquals(getRowKey(batchId, NUM_ROWS_PER_BATCH / 3 - 1), seeker.getKeyValue().getRow());
+    assertArrayEquals(getRowKey(batchId, NUM_ROWS_PER_BATCH / 3 - 1),
+      CellUtil.cloneRow(seeker.getKeyValue()));
 
     // Seek before the last keyvalue;
     seekKey = KeyValueUtil.createFirstDeleteFamilyOnRow(Bytes.toBytes("zzzz"), CF_BYTES);
@@ -139,7 +142,8 @@ public class TestPrefixTreeEncoding {
         new KeyValue.KeyOnlyKeyValue(seekKey.getBuffer(), seekKey.getKeyOffset(), seekKey
             .getKeyLength()), true);
     assertNotNull(seeker.getKeyValue());
-    assertArrayEquals(getRowKey(batchId, NUM_ROWS_PER_BATCH - 1), seeker.getKeyValue().getRow());
+    assertArrayEquals(getRowKey(batchId, NUM_ROWS_PER_BATCH - 1),
+      CellUtil.cloneRow(seeker.getKeyValue()));
   }
 
   @Test
@@ -157,7 +161,7 @@ public class TestPrefixTreeEncoding {
         DataBlockEncoding.PREFIX_TREE, new byte[0], meta);
     generateRandomTestData(kvset, numBatchesWritten++, includesTag, encoder, blkEncodingCtx,
         userDataStream);
-    EncodedSeeker seeker = encoder.createSeeker(KeyValue.COMPARATOR,
+    EncodedSeeker seeker = encoder.createSeeker(CellComparator.COMPARATOR,
         encoder.newDataBlockDecodingContext(meta));
     byte[] onDiskBytes = baosInMemory.toByteArray();
     ByteBuffer readBuffer = ByteBuffer.wrap(onDiskBytes, DataBlockEncoding.ID_SIZE,
@@ -167,7 +171,7 @@ public class TestPrefixTreeEncoding {
     do {
       Cell currentKV = seeker.getKeyValue();
       System.out.println(currentKV);
-      if (previousKV != null && KeyValue.COMPARATOR.compare(currentKV, previousKV) < 0) {
+      if (previousKV != null && CellComparator.COMPARATOR.compare(currentKV, previousKV) < 0) {
         dumpInputKVSet();
         fail("Current kv " + currentKV + " is smaller than previous keyvalue " + previousKV);
       }
@@ -195,7 +199,7 @@ public class TestPrefixTreeEncoding {
     HFileBlockEncodingContext blkEncodingCtx = new HFileBlockDefaultEncodingContext(
         DataBlockEncoding.PREFIX_TREE, new byte[0], meta);
     generateRandomTestData(kvset, batchId, includesTag, encoder, blkEncodingCtx, userDataStream);
-    EncodedSeeker seeker = encoder.createSeeker(KeyValue.COMPARATOR,
+    EncodedSeeker seeker = encoder.createSeeker(CellComparator.COMPARATOR,
         encoder.newDataBlockDecodingContext(meta));
     byte[] onDiskBytes = baosInMemory.toByteArray();
     ByteBuffer readBuffer = ByteBuffer.wrap(onDiskBytes, DataBlockEncoding.ID_SIZE,
@@ -218,14 +222,14 @@ public class TestPrefixTreeEncoding {
     ByteArrayOutputStream baosInMemory = new ByteArrayOutputStream();
     DataOutputStream userDataStream = new DataOutputStream(baosInMemory);
     generateFixedTestData(kvset, batchId, includesTag, encoder, blkEncodingCtx, userDataStream);
-    EncodedSeeker seeker = encoder.createSeeker(KeyValue.COMPARATOR,
+    EncodedSeeker seeker = encoder.createSeeker(CellComparator.COMPARATOR,
         encoder.newDataBlockDecodingContext(meta));
     byte[] onDiskBytes = baosInMemory.toByteArray();
     ByteBuffer readBuffer = ByteBuffer.wrap(onDiskBytes, DataBlockEncoding.ID_SIZE,
         onDiskBytes.length - DataBlockEncoding.ID_SIZE);
     verifySeeking(seeker, readBuffer, batchId);
   }
-  
+
   private void verifySeeking(EncodedSeeker encodeSeeker,
       ByteBuffer encodedData, int batchId) {
     List<KeyValue> kvList = new ArrayList<KeyValue>();
@@ -245,7 +249,7 @@ public class TestPrefixTreeEncoding {
         fail("Get error result after seeking " + firstOnRow);
       }
       if (hasMoreOfEncodeScanner) {
-        if (KeyValue.COMPARATOR.compare(encodeSeeker.getKeyValue(),
+        if (CellComparator.COMPARATOR.compare(encodeSeeker.getKeyValue(),
             collectionScanner.peek()) != 0) {
           dumpInputKVSet();
           fail("Expected " + collectionScanner.peek() + " actual "

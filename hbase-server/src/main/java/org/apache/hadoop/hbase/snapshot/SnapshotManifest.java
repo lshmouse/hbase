@@ -39,7 +39,6 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableState;
 import org.apache.hadoop.hbase.errorhandling.ForeignExceptionSnare;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
 import org.apache.hadoop.hbase.protobuf.generated.SnapshotProtos.SnapshotDataManifest;
@@ -168,7 +167,7 @@ public class SnapshotManifest {
     // 2. iterate through all the stores in the region
     LOG.debug("Creating references for hfiles");
 
-    for (Store store : region.getStores().values()) {
+    for (Store store : region.getStores()) {
       // 2.1. build the snapshot reference for the store
       Object familyData = visitor.familyOpen(regionData, store.getFamily().getName());
       monitor.rethrowException();
@@ -357,7 +356,7 @@ public class SnapshotManifest {
       // write a copy of descriptor to the snapshot directory
       new FSTableDescriptors(conf, fs, rootDir)
         .createTableDescriptorForTableDirectory(workingDir, new TableDescriptor(
-            htd, TableState.State.ENABLED), false);
+            htd), false);
     } else {
       LOG.debug("Convert to Single Snapshot Manifest");
       convertToV2SingleManifest();

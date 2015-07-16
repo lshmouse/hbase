@@ -34,6 +34,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
@@ -47,6 +48,7 @@ import org.apache.hadoop.hbase.util.CollectionBackedScanner;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
+import org.apache.htrace.Trace;
 
 /**
  * The MemStore holds in-memory modifications to the Store.  Modifications
@@ -83,7 +85,7 @@ public class DefaultMemStore implements MemStore {
   // Snapshot of memstore.  Made for flusher.
   volatile CellSkipListSet snapshot;
 
-  final KeyValue.KVComparator comparator;
+  final CellComparator comparator;
 
   // Used to track own heapSize
   final AtomicLong size;
@@ -98,12 +100,13 @@ public class DefaultMemStore implements MemStore {
   volatile MemStoreLAB allocator;
   volatile MemStoreLAB snapshotAllocator;
   volatile long snapshotId;
+  volatile boolean tagsPresent;
 
   /**
    * Default constructor. Used for tests.
    */
   public DefaultMemStore() {
-    this(HBaseConfiguration.create(), KeyValue.COMPARATOR);
+    this(HBaseConfiguration.create(), CellComparator.COMPARATOR);
   }
 
   /**
@@ -111,7 +114,7 @@ public class DefaultMemStore implements MemStore {
    * @param c Comparator
    */
   public DefaultMemStore(final Configuration conf,
-                  final KeyValue.KVComparator c) {
+                  final CellComparator c) {
     this.conf = conf;
     this.comparator = c;
     this.cellSet = new CellSkipListSet(c);
@@ -169,8 +172,11 @@ public class DefaultMemStore implements MemStore {
         timeOfOldestEdit = Long.MAX_VALUE;
       }
     }
-    return new MemStoreSnapshot(this.snapshotId, snapshot.size(), this.snapshotSize,
-        this.snapshotTimeRangeTracker, new CollectionBackedScanner(snapshot, this.comparator));
+    MemStoreSnapshot memStoreSnapshot = new MemStoreSnapshot(this.snapshotId, snapshot.size(), this.snapshotSize,
+        this.snapshotTimeRangeTracker, new CollectionBackedScanner(snapshot, this.comparator),
+        this.tagsPresent);
+    this.tagsPresent = false;
+    return memStoreSnapshot;
   }
 
   /**
@@ -208,10 +214,15 @@ public class DefaultMemStore implements MemStore {
     return this.snapshotSize > 0 ? this.snapshotSize : keySize();
   }
 
+  @Override
+  public long getSnapshotSize() {
+    return this.snapshotSize;
+  }
+
   /**
    * Write an update
    * @param cell
-   * @return approximate size of the passed KV & newly added KV which maybe different than the
+   * @return approximate size of the passed KV &amp; newly added KV which maybe different than the
    *         passed-in KV
    */
   @Override
@@ -227,6 +238,13 @@ public class DefaultMemStore implements MemStore {
 
   private boolean addToCellSet(Cell e) {
     boolean b = this.cellSet.add(e);
+    // In no tags case this NoTagsKeyValue.getTagsLength() is a cheap call.
+    // When we use ACL CP or Visibility CP which deals with Tags during
+    // mutation, the TagRewriteCell.getTagsLength() is a cheaper call. We do not
+    // parse the byte[] to identify the tags length.
+    if(e.getTagsLength() > 0) {
+      tagsPresent = true;
+    }
     setOldestEditTimeToNow();
     return b;
   }
@@ -462,6 +480,7 @@ public class DefaultMemStore implements MemStore {
    * @param now
    * @return  Timestamp
    */
+  @Override
   public long updateColumnValue(byte[] row,
                                 byte[] family,
                                 byte[] qualifier,
@@ -524,7 +543,7 @@ public class DefaultMemStore implements MemStore {
    * atomically.  Scans will only see each KeyValue update as atomic.
    *
    * @param cells
-   * @param readpoint readpoint below which we can safely remove duplicate KVs 
+   * @param readpoint readpoint below which we can safely remove duplicate KVs
    * @return change in memstore size
    */
   @Override
@@ -581,7 +600,7 @@ public class DefaultMemStore implements MemStore {
         // only remove Puts that concurrent scanners cannot possibly see
         if (cur.getTypeByte() == KeyValue.Type.Put.getCode() &&
             cur.getSequenceId() <= readpoint) {
-          if (versionsVisible > 1) {
+          if (versionsVisible >= 1) {
             // if we get here we have seen at least one version visible to the oldest scanner,
             // which means we can prove that no scanner will see this version
 
@@ -730,6 +749,9 @@ public class DefaultMemStore implements MemStore {
       if (snapshotAllocator != null) {
         this.snapshotAllocatorAtCreation = snapshotAllocator;
         this.snapshotAllocatorAtCreation.incScannerCount();
+      }
+      if (Trace.isTracing() && Trace.currentSpan() != null) {
+        Trace.currentSpan().addTimelineAnnotation("Creating MemStoreScanner");
       }
     }
 
@@ -949,8 +971,7 @@ public class DefaultMemStore implements MemStore {
      */
     @Override
     public synchronized boolean seekToPreviousRow(Cell key) {
-      Cell firstKeyOnRow = KeyValueUtil.createFirstOnRow(key.getRowArray(), key.getRowOffset(),
-          key.getRowLength());
+      Cell firstKeyOnRow = CellUtil.createFirstOnRow(key);
       SortedSet<Cell> cellHead = cellSetAtCreation.headSet(firstKeyOnRow);
       Cell cellSetBeforeRow = cellHead.isEmpty() ? null : cellHead.last();
       SortedSet<Cell> snapshotHead = snapshotAtCreation
@@ -962,8 +983,7 @@ public class DefaultMemStore implements MemStore {
         theNext = null;
         return false;
       }
-      Cell firstKeyOnPreviousRow = KeyValueUtil.createFirstOnRow(lastCellBeforeRow.getRowArray(),
-          lastCellBeforeRow.getRowOffset(), lastCellBeforeRow.getRowLength());
+      Cell firstKeyOnPreviousRow = CellUtil.createFirstOnRow(lastCellBeforeRow);
       this.stopSkippingCellsIfNextRow = true;
       seek(firstKeyOnPreviousRow);
       this.stopSkippingCellsIfNextRow = false;
@@ -984,8 +1004,7 @@ public class DefaultMemStore implements MemStore {
       if (higherCell == null) {
         return false;
       }
-      Cell firstCellOnLastRow = KeyValueUtil.createFirstOnRow(higherCell.getRowArray(),
-          higherCell.getRowOffset(), higherCell.getRowLength());
+      Cell firstCellOnLastRow = CellUtil.createFirstOnRow(higherCell);
       if (seek(firstCellOnLastRow)) {
         return true;
       } else {
@@ -995,8 +1014,8 @@ public class DefaultMemStore implements MemStore {
     }
   }
 
-  public final static long FIXED_OVERHEAD = ClassSize.align(
-      ClassSize.OBJECT + (9 * ClassSize.REFERENCE) + (3 * Bytes.SIZEOF_LONG));
+  public final static long FIXED_OVERHEAD = ClassSize.align(ClassSize.OBJECT
+      + (9 * ClassSize.REFERENCE) + (3 * Bytes.SIZEOF_LONG) + Bytes.SIZEOF_BOOLEAN);
 
   public final static long DEEP_OVERHEAD = ClassSize.align(FIXED_OVERHEAD +
       ClassSize.ATOMIC_LONG + (2 * ClassSize.TIMERANGE_TRACKER) +
@@ -1031,7 +1050,7 @@ public class DefaultMemStore implements MemStore {
   public long size() {
     return heapSize();
   }
- 
+
   /**
    * Code to help figure if our approximation of object heap sizes is close
    * enough.  See hbase-900.  Fills memstores then waits so user can heap

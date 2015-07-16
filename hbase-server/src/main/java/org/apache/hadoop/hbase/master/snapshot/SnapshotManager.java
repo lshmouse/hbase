@@ -47,7 +47,7 @@ import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.client.TableState;
 import org.apache.hadoop.hbase.errorhandling.ForeignException;
 import org.apache.hadoop.hbase.executor.ExecutorService;
-import org.apache.hadoop.hbase.ipc.RequestContext;
+import org.apache.hadoop.hbase.ipc.RpcServer;
 import org.apache.hadoop.hbase.master.AssignmentManager;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.master.MasterFileSystem;
@@ -567,7 +567,7 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
     if (!snapshot.hasVersion()) {
       builder.setVersion(SnapshotDescriptionUtils.SNAPSHOT_LAYOUT_VERSION);
     }
-    User user = RequestContext.getRequestUser();
+    User user = RpcServer.getRequestUser();
     if (User.isHBaseSecurityEnabled(master.getConfiguration()) && user != null) {
       builder.setOwner(user.getShortName());
     }
@@ -734,7 +734,16 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
       if (cpHost != null) {
         cpHost.preRestoreSnapshot(reqSnapshot, snapshotTableDesc);
       }
-      restoreSnapshot(snapshot, snapshotTableDesc);
+      try {
+        // Table already exist. Check and update the region quota for this table namespace
+        checkAndUpdateNamespaceRegionQuota(manifest, tableName);
+        restoreSnapshot(snapshot, snapshotTableDesc);
+      } catch (IOException e) {
+        this.master.getMasterQuotaManager().removeTableFromNamespaceQuota(tableName);
+        LOG.error("Exception occurred while restoring the snapshot " + snapshot.getName()
+            + " as table " + tableName.getNameAsString(), e);
+        throw e;
+      }
       LOG.info("Restore snapshot=" + snapshot.getName() + " as table=" + tableName);
 
       if (cpHost != null) {
@@ -745,12 +754,36 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
       if (cpHost != null) {
         cpHost.preCloneSnapshot(reqSnapshot, htd);
       }
-      cloneSnapshot(snapshot, htd);
+      try {
+        checkAndUpdateNamespaceQuota(manifest, tableName);
+        cloneSnapshot(snapshot, htd);
+      } catch (IOException e) {
+        this.master.getMasterQuotaManager().removeTableFromNamespaceQuota(tableName);
+        LOG.error("Exception occurred while cloning the snapshot " + snapshot.getName()
+            + " as table " + tableName.getNameAsString(), e);
+        throw e;
+      }
       LOG.info("Clone snapshot=" + snapshot.getName() + " as table=" + tableName);
 
       if (cpHost != null) {
         cpHost.postCloneSnapshot(reqSnapshot, htd);
       }
+    }
+  }
+  
+  private void checkAndUpdateNamespaceQuota(SnapshotManifest manifest, TableName tableName)
+      throws IOException {
+    if (this.master.getMasterQuotaManager().isQuotaEnabled()) {
+      this.master.getMasterQuotaManager().checkNamespaceTableAndRegionQuota(tableName,
+        manifest.getRegionManifestsMap().size());
+    }
+  }
+
+  private void checkAndUpdateNamespaceRegionQuota(SnapshotManifest manifest, TableName tableName)
+      throws IOException {
+    if (this.master.getMasterQuotaManager().isQuotaEnabled()) {
+      this.master.getMasterQuotaManager().checkAndUpdateNamespaceRegionQuota(tableName,
+        manifest.getRegionManifestsMap().size());
     }
   }
 

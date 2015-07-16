@@ -18,20 +18,8 @@
  */
 package org.apache.hadoop.hbase.mapreduce;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.URL;
-import java.net.URLDecoder;
-import java.util.ArrayList;
-import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
-
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.yammer.metrics.core.MetricsRegistry;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -57,12 +45,25 @@ import org.apache.hadoop.hbase.util.Base64;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputFormat;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.util.StringUtils;
 import com.google.protobuf.InvalidProtocolBufferException;
-import com.yammer.metrics.core.MetricsRegistry;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
+import java.net.URLDecoder;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * Utility for {@link TableMapper} and {@link TableReducer}
@@ -71,7 +72,7 @@ import com.yammer.metrics.core.MetricsRegistry;
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public class TableMapReduceUtil {
-  static Log LOG = LogFactory.getLog(TableMapReduceUtil.class);
+  private static final Log LOG = LogFactory.getLog(TableMapReduceUtil.class);
 
   /**
    * Use this before submitting a TableMap job. It will appropriately set up
@@ -308,6 +309,44 @@ public class TableMapReduceUtil {
   }
 
   /**
+   * Sets up the job for reading from one or more table snapshots, with one or more scans
+   * per snapshot.
+   * It bypasses hbase servers and read directly from snapshot files.
+   *
+   * @param snapshotScans     map of snapshot name to scans on that snapshot.
+   * @param mapper            The mapper class to use.
+   * @param outputKeyClass    The class of the output key.
+   * @param outputValueClass  The class of the output value.
+   * @param job               The current job to adjust.  Make sure the passed job is
+   *                          carrying all necessary HBase configuration.
+   * @param addDependencyJars upload HBase jars and jars for any of the configured
+   *                          job classes via the distributed cache (tmpjars).
+   */
+  public static void initMultiTableSnapshotMapperJob(Map<String, Collection<Scan>> snapshotScans,
+      Class<? extends TableMapper> mapper, Class<?> outputKeyClass, Class<?> outputValueClass,
+      Job job, boolean addDependencyJars, Path tmpRestoreDir) throws IOException {
+    MultiTableSnapshotInputFormat.setInput(job.getConfiguration(), snapshotScans, tmpRestoreDir);
+
+    job.setInputFormatClass(MultiTableSnapshotInputFormat.class);
+    if (outputValueClass != null) {
+      job.setMapOutputValueClass(outputValueClass);
+    }
+    if (outputKeyClass != null) {
+      job.setMapOutputKeyClass(outputKeyClass);
+    }
+    job.setMapperClass(mapper);
+    Configuration conf = job.getConfiguration();
+    HBaseConfiguration.merge(conf, HBaseConfiguration.create(conf));
+
+    if (addDependencyJars) {
+      addDependencyJars(job);
+      addDependencyJars(job.getConfiguration(), MetricsRegistry.class);
+    }
+
+    resetCacheConfig(job.getConfiguration());
+  }
+
+  /**
    * Sets up the job for reading from a table snapshot. It bypasses hbase servers
    * and read directly from snapshot files.
    *
@@ -336,7 +375,6 @@ public class TableMapReduceUtil {
     TableSnapshotInputFormat.setInput(job, snapshotName, tmpRestoreDir);
     initTableMapperJob(snapshotName, scan, mapper, outputKeyClass,
         outputValueClass, job, addDependencyJars, false, TableSnapshotInputFormat.class);
-    addDependencyJars(job.getConfiguration(), MetricsRegistry.class);
     resetCacheConfig(job.getConfiguration());
   }
 
@@ -354,8 +392,8 @@ public class TableMapReduceUtil {
    */
   public static void initTableMapperJob(List<Scan> scans,
       Class<? extends TableMapper> mapper,
-      Class<? extends WritableComparable> outputKeyClass,
-      Class<? extends Writable> outputValueClass, Job job) throws IOException {
+      Class<?> outputKeyClass,
+      Class<?> outputValueClass, Job job) throws IOException {
     initTableMapperJob(scans, mapper, outputKeyClass, outputValueClass, job,
         true);
   }
@@ -376,8 +414,8 @@ public class TableMapReduceUtil {
    */
   public static void initTableMapperJob(List<Scan> scans,
       Class<? extends TableMapper> mapper,
-      Class<? extends WritableComparable> outputKeyClass,
-      Class<? extends Writable> outputValueClass, Job job,
+      Class<?> outputKeyClass,
+      Class<?> outputValueClass, Job job,
       boolean addDependencyJars) throws IOException {
     initTableMapperJob(scans, mapper, outputKeyClass, outputValueClass, job,
       addDependencyJars, true);
@@ -400,8 +438,8 @@ public class TableMapReduceUtil {
    */
   public static void initTableMapperJob(List<Scan> scans,
       Class<? extends TableMapper> mapper,
-      Class<? extends WritableComparable> outputKeyClass,
-      Class<? extends Writable> outputValueClass, Job job,
+      Class<?> outputKeyClass,
+      Class<?> outputValueClass, Job job,
       boolean addDependencyJars,
       boolean initCredentials) throws IOException {
     job.setInputFormatClass(MultiTableInputFormat.class);
@@ -475,7 +513,8 @@ public class TableMapReduceUtil {
    * and add it to the credentials for the given map reduce job.
    *
    * The quorumAddress is the key to the ZK ensemble, which contains:
-   * hbase.zookeeper.quorum, hbase.zookeeper.client.port and zookeeper.znode.parent
+   * hbase.zookeeper.quorum, hbase.zookeeper.client.port and
+   * zookeeper.znode.parent
    *
    * @param job The job that requires the permission.
    * @param quorumAddress string that contains the 3 required configuratins
@@ -581,7 +620,8 @@ public class TableMapReduceUtil {
    * default; e.g. copying tables between clusters, the source would be
    * designated by <code>hbase-site.xml</code> and this param would have the
    * ensemble address of the remote cluster.  The format to pass is particular.
-   * Pass <code> &lt;hbase.zookeeper.quorum>:&lt;hbase.zookeeper.client.port>:&lt;zookeeper.znode.parent>
+   * Pass <code> &lt;hbase.zookeeper.quorum&gt;:&lt;
+   *             hbase.zookeeper.client.port&gt;:&lt;zookeeper.znode.parent&gt;
    * </code> such as <code>server,server2,server3:2181:/hbase</code>.
    * @param serverClass redefined hbase.regionserver.class
    * @param serverImpl redefined hbase.regionserver.impl
@@ -612,7 +652,8 @@ public class TableMapReduceUtil {
    * default; e.g. copying tables between clusters, the source would be
    * designated by <code>hbase-site.xml</code> and this param would have the
    * ensemble address of the remote cluster.  The format to pass is particular.
-   * Pass <code> &lt;hbase.zookeeper.quorum>:&lt;hbase.zookeeper.client.port>:&lt;zookeeper.znode.parent>
+   * Pass <code> &lt;hbase.zookeeper.quorum&gt;:&lt;
+   *             hbase.zookeeper.client.port&gt;:&lt;zookeeper.znode.parent&gt;
    * </code> such as <code>server,server2,server3:2181:/hbase</code>.
    * @param serverClass redefined hbase.regionserver.class
    * @param serverImpl redefined hbase.regionserver.impl
@@ -729,7 +770,8 @@ public class TableMapReduceUtil {
       io.netty.channel.Channel.class,
       com.google.protobuf.Message.class,
       com.google.common.collect.Lists.class,
-      org.apache.htrace.Trace.class);
+      org.apache.htrace.Trace.class,
+      com.yammer.metrics.core.MetricsRegistry.class);
   }
 
   /**

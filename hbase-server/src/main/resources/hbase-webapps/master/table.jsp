@@ -20,20 +20,28 @@
 <%@ page contentType="text/html;charset=UTF-8"
   import="static org.apache.commons.lang.StringEscapeUtils.escapeXml"
   import="java.util.TreeMap"
+  import="java.util.List"
   import="java.util.Map"
+  import="java.util.Set"
+  import="java.util.Collection"
   import="org.apache.hadoop.conf.Configuration"
   import="org.apache.hadoop.hbase.client.HTable"
   import="org.apache.hadoop.hbase.client.Admin"
+  import="org.apache.hadoop.hbase.client.RegionLocator"
   import="org.apache.hadoop.hbase.HRegionInfo"
+  import="org.apache.hadoop.hbase.HRegionLocation"
   import="org.apache.hadoop.hbase.ServerName"
   import="org.apache.hadoop.hbase.ServerLoad"
   import="org.apache.hadoop.hbase.RegionLoad"
-  import="org.apache.hadoop.hbase.master.HMaster" 
+  import="org.apache.hadoop.hbase.HConstants"
+  import="org.apache.hadoop.hbase.master.HMaster"
   import="org.apache.hadoop.hbase.zookeeper.MetaTableLocator"
   import="org.apache.hadoop.hbase.util.Bytes"
   import="org.apache.hadoop.hbase.util.FSUtils"
   import="org.apache.hadoop.hbase.protobuf.generated.AdminProtos.GetRegionInfoResponse.CompactionState"
   import="org.apache.hadoop.hbase.TableName"
+  import="org.apache.hadoop.hbase.HColumnDescriptor"
+  import="org.apache.hadoop.hbase.client.RegionReplicaUtil"
   import="org.apache.hadoop.hbase.HBaseConfiguration" %>
 <%
   HMaster master = (HMaster)getServletContext().getAttribute(HMaster.MASTER);
@@ -41,37 +49,33 @@
 
   MetaTableLocator metaTableLocator = new MetaTableLocator();
   String fqtn = request.getParameter("name");
-  HTable table = (HTable) master.getConnection().getTable(fqtn);
+  HTable table = null;
   String tableHeader;
   boolean withReplica = false;
-  if (table.getTableDescriptor().getRegionReplication() > 1) {
-    tableHeader = "<h2>Table Regions</h2><table class=\"table table-striped\"><tr><th>Name</th><th>Region Server</th><th>Start Key</th><th>End Key</th><th>Locality</th><th>Requests</th><th>ReplicaID</th></tr>";
-    withReplica = true;
-  } else {
-    tableHeader = "<h2>Table Regions</h2><table class=\"table table-striped\"><tr><th>Name</th><th>Region Server</th><th>Start Key</th><th>End Key</th><th>Locality</th><th>Requests</th></tr>";
-  }
   ServerName rl = metaTableLocator.getMetaRegionLocation(master.getZooKeeper());
   boolean showFragmentation = conf.getBoolean("hbase.master.ui.fragmentation.enabled", false);
   boolean readOnly = conf.getBoolean("hbase.master.ui.readonly", false);
+  int numMetaReplicas = conf.getInt(HConstants.META_REPLICAS_NUM,
+                        HConstants.DEFAULT_META_REPLICA_NUM);
   Map<String, Integer> frags = null;
   if (showFragmentation) {
       frags = FSUtils.getTableFragmentation(master);
   }
+  String action = request.getParameter("action");
+  String key = request.getParameter("key");
 %>
 <!--[if IE]>
 <!DOCTYPE html>
 <![endif]-->
 <?xml version="1.0" encoding="UTF-8" ?>
 <html xmlns="http://www.w3.org/1999/xhtml">
-
-<%
-  String action = request.getParameter("action");
-  String key = request.getParameter("key");
-  if ( !readOnly && action != null ) {
-%>
   <head>
     <meta charset="utf-8">
-    <title>HBase Master: <%= master.getServerName() %></title>
+    <% if ( !readOnly && action != null ) { %>
+        <title>HBase Master: <%= master.getServerName() %></title>
+    <% } else { %>
+        <title>Table: <%= fqtn %></title>
+    <% } %>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="">
     <meta name="author" content="">
@@ -80,11 +84,17 @@
       <link href="/static/css/bootstrap.min.css" rel="stylesheet">
       <link href="/static/css/bootstrap-theme.min.css" rel="stylesheet">
       <link href="/static/css/hbase.css" rel="stylesheet">
+      <% if ( ( !readOnly && action != null ) || fqtn == null ) { %>
 	  <script type="text/javascript">
       <!--
 		  setTimeout("history.back()",5000);
 	  -->
 	  </script>
+      <% } else { %>
+      <!--[if lt IE 9]>
+          <script src="/static/js/html5shiv.js"></script>
+      <![endif]-->
+      <% } %>
 </head>
 <body>
 <div class="navbar  navbar-fixed-top navbar-default">
@@ -112,6 +122,17 @@
         </div><!--/.nav-collapse -->
     </div>
 </div>
+<%
+if ( fqtn != null ) {
+  table = (HTable) master.getConnection().getTable(fqtn);
+  if (table.getTableDescriptor().getRegionReplication() > 1) {
+    tableHeader = "<h2>Table Regions</h2><table class=\"table table-striped\"><tr><th>Name</th><th>Region Server</th><th>Start Key</th><th>End Key</th><th>Locality</th><th>Requests</th><th>ReplicaID</th></tr>";
+    withReplica = true;
+  } else {
+    tableHeader = "<h2>Table Regions</h2><table class=\"table table-striped\"><tr><th>Name</th><th>Region Server</th><th>Start Key</th><th>End Key</th><th>Locality</th><th>Requests</th></tr>";
+  }
+  if ( !readOnly && action != null ) {
+%>
 <div class="container">
 
 
@@ -129,7 +150,7 @@
       } else {
         admin.split(TableName.valueOf(fqtn));
       }
-    
+
     %> Split request accepted. <%
     } else if (action.equals("compact")) {
       if (key != null && key.length() > 0) {
@@ -143,50 +164,9 @@
 %>
 <p>Go <a href="javascript:history.back()">Back</a>, or wait for the redirect.
 </div>
-<script src="/static/js/jquery.min.js" type="text/javascript"></script>
-<script src="/static/js/bootstrap.min.js" type="text/javascript"></script>
-</body>
 <%
-} else {
+  } else {
 %>
-  <head>
-    <meta charset="utf-8">
-    <title>Table: <%= fqtn %></title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="">
-    <meta name="author" content="">
-
-
-      <link href="/static/css/bootstrap.min.css" rel="stylesheet">
-      <link href="/static/css/bootstrap-theme.min.css" rel="stylesheet">
-      <link href="/static/css/hbase.css" rel="stylesheet">
-    <!--[if lt IE 9]>
-      <script src="/static/js/html5shiv.js"></script>
-    <![endif]-->
-  </head>
-<body>
-<div class="navbar  navbar-fixed-top navbar-default">
-    <div class="container">
-        <div class="navbar-header">
-            <button type="button" class="navbar-toggle" data-toggle="collapse" data-target=".navbar-collapse">
-                <span class="icon-bar"></span>
-                <span class="icon-bar"></span>
-                <span class="icon-bar"></span>
-            </button>
-            <a class="navbar-brand" href="/master-status"><img src="/static/hbase_logo_small.png" alt="HBase Logo"/></a>
-        </div>
-        <div class="collapse navbar-collapse">
-            <ul class="nav navbar-nav">
-                <li><a href="/master-status">Home</a></li>
-                <li><a href="/tablesDetailed.jsp">Table Details</a></li>
-                <li><a href="/logs/">Local Logs</a></li>
-                <li><a href="/logLevel">Log Level</a></li>
-                <li><a href="/dump">Debug Dump</a></li>
-                <li><a href="/jmx">Metrics Dump</a></li>
-            </ul>
-        </div><!--/.nav-collapse -->
-    </div>
-</div>
 <div class="container">
 
 
@@ -202,11 +182,14 @@
 %>
 <%= tableHeader %>
 <%
-  // NOTE: Presumes one meta region only.
-  HRegionInfo meta = HRegionInfo.FIRST_META_REGIONINFO;
-  ServerName metaLocation = metaTableLocator.waitMetaRegionLocation(master.getZooKeeper(), 1);
-  for (int i = 0; i < 1; i++) {
-    String url = "//" + metaLocation.getHostname() + ":" + master.getRegionServerInfoPort(metaLocation) + "/";
+  // NOTE: Presumes meta with one or more replicas
+  for (int j = 0; j < numMetaReplicas; j++) {
+    HRegionInfo meta = RegionReplicaUtil.getRegionInfoForReplica(
+                            HRegionInfo.FIRST_META_REGIONINFO, j);
+    ServerName metaLocation = metaTableLocator.waitMetaRegionLocation(master.getZooKeeper(), j, 1);
+    for (int i = 0; i < 1; i++) {
+      String url = "//" + metaLocation.getHostname() + ":" +
+                   master.getRegionServerInfoPort(metaLocation) + "/";
 %>
 <tr>
   <td><%= escapeXml(meta.getRegionNameAsString()) %></td>
@@ -217,9 +200,11 @@
     <td>-</td>
 </tr>
 <%  } %>
+<%} %>
 </table>
 <%} else {
   Admin admin = master.getConnection().getAdmin();
+  RegionLocator r = master.getConnection().getRegionLocator(table.getName());
   try { %>
 <h2>Table Attributes</h2>
 <table class="table table-striped">
@@ -259,15 +244,51 @@
   </tr>
 <%  } %>
 </table>
+<h2>Table Schema</h2>
+<table class="table table-striped">
+  <tr>
+      <th>Column Name</th>
+      <th></th>
+  </tr>
+  <%
+    Collection<HColumnDescriptor> families = table.getTableDescriptor().getFamilies();
+    for (HColumnDescriptor family: families) {
+  %>
+  <tr>
+    <td><%= family.getNameAsString() %></td>
+    <td>
+    <table class="table table-striped">
+      <tr>
+       <th>Property</th>
+       <th>Value</th>
+      </tr>
+    <%
+    Map<Bytes, Bytes> familyValues = family.getValues();
+    for (Bytes familyKey: familyValues.keySet()) {
+    %>
+      <tr>
+        <td>
+          <%= familyKey %>
+		</td>
+        <td>
+          <%= familyValues.get(familyKey) %>
+        </td>
+      </tr>
+    <% } %>
+    </table>
+    </td>
+  </tr>
+  <% } %>
+</table>
 <%
   Map<ServerName, Integer> regDistribution = new TreeMap<ServerName, Integer>();
-  Map<HRegionInfo, ServerName> regions = table.getRegionLocations();
+  List<HRegionLocation> regions = r.getAllRegionLocations();
   if(regions != null && regions.size() > 0) { %>
 <%=     tableHeader %>
 <%
-  for (Map.Entry<HRegionInfo, ServerName> hriEntry : regions.entrySet()) {
-    HRegionInfo regionInfo = hriEntry.getKey();
-    ServerName addr = hriEntry.getValue();
+  for (HRegionLocation hriEntry : regions) {
+    HRegionInfo regionInfo = hriEntry.getRegionInfo();
+    ServerName addr = hriEntry.getServerName();
     long req = 0;
     float locality = 0.0f;
     String urlRegionServer = null;
@@ -322,8 +343,8 @@
 <h2>Regions by Region Server</h2>
 <table class="table table-striped"><tr><th>Region Server</th><th>Region Count</th></tr>
 <%
-  for (Map.Entry<ServerName, Integer> rdEntry : regDistribution.entrySet()) {   
-     ServerName addr = rdEntry.getKey();                                       
+  for (Map.Entry<ServerName, Integer> rdEntry : regDistribution.entrySet()) {
+     ServerName addr = rdEntry.getKey();
      String url = "//" + addr.getHostname() + ":" + master.getRegionServerInfoPort(addr) + "/";
 %>
 <tr>
@@ -379,12 +400,22 @@ Actions:
 </table>
 </center>
 </p>
+<% } %>
 </div>
+</div>
+<% }
+} else { // handle the case for fqtn is null with error message + redirect
+%>
+<div class="container">
+    <div class="row inner_header">
+        <div class="page-header">
+            <h1>Table not ready</h1>
+        </div>
+    </div>
+<p><hr><p>
+<p>Go <a href="javascript:history.back()">Back</a>, or wait for the redirect.
 </div>
 <% } %>
-<%
-}
-%>
 <script src="/static/js/jquery.min.js" type="text/javascript"></script>
 <script src="/static/js/bootstrap.min.js" type="text/javascript"></script>
 

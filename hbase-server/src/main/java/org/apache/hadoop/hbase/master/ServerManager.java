@@ -29,8 +29,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
-import java.util.SortedMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -38,18 +38,21 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ClockOutOfSyncException;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.NotServingRegionException;
 import org.apache.hadoop.hbase.RegionLoad;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerLoad;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.YouAreDeadException;
+import org.apache.hadoop.hbase.ZooKeeperConnectionException;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
+import org.apache.hadoop.hbase.client.RetriesExhaustedException;
 import org.apache.hadoop.hbase.master.balancer.BaseLoadBalancer;
-import org.apache.hadoop.hbase.master.handler.MetaServerShutdownHandler;
-import org.apache.hadoop.hbase.master.handler.ServerShutdownHandler;
+import org.apache.hadoop.hbase.master.procedure.ServerCrashProcedure;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.RequestConverter;
@@ -58,6 +61,9 @@ import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.AdminService;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.OpenRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.OpenRegionResponse;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.ServerInfo;
+import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.RegionServerStartupRequest;
+import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos.RegionStoreSequenceIds;
+import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos.StoreSequenceId;
 import org.apache.hadoop.hbase.protobuf.generated.ZooKeeperProtos.SplitLogTask.RecoveryMode;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.RegionOpeningState;
@@ -70,6 +76,7 @@ import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.apache.zookeeper.KeeperException;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.ServiceException;
 
 /**
@@ -113,8 +120,18 @@ public class ServerManager {
   // Set if we are to shutdown the cluster.
   private volatile boolean clusterShutdown = false;
 
-  private final SortedMap<byte[], Long> flushedSequenceIdByRegion =
+  /**
+   * The last flushed sequence id for a region.
+   */
+  private final ConcurrentNavigableMap<byte[], Long> flushedSequenceIdByRegion =
     new ConcurrentSkipListMap<byte[], Long>(Bytes.BYTES_COMPARATOR);
+
+  /**
+   * The last flushed sequence id for a store in a region.
+   */
+  private final ConcurrentNavigableMap<byte[], ConcurrentNavigableMap<byte[], Long>>
+    storeFlushedSequenceIdsByRegion =
+    new ConcurrentSkipListMap<byte[], ConcurrentNavigableMap<byte[], Long>>(Bytes.BYTES_COMPARATOR);
 
   /** Map of registered servers to their current load */
   private final ConcurrentHashMap<ServerName, ServerLoad> onlineServers =
@@ -228,16 +245,13 @@ public class ServerManager {
 
   /**
    * Let the server manager know a new regionserver has come online
-   * @param ia The remote address
-   * @param port The remote port
-   * @param serverStartcode
-   * @param serverCurrentTime The current time of the region server in ms
+   * @param request the startup request
+   * @param ia the InetAddress from which request is received
    * @return The ServerName we know this server as.
    * @throws IOException
    */
-  ServerName regionServerStartup(final InetAddress ia, final int port,
-    final long serverStartcode, long serverCurrentTime)
-  throws IOException {
+  ServerName regionServerStartup(RegionServerStartupRequest request, InetAddress ia)
+      throws IOException {
     // Test for case where we get a region startup message from a regionserver
     // that has been quickly restarted but whose znode expiration handler has
     // not yet run, or from a server whose fail we are currently processing.
@@ -245,8 +259,12 @@ public class ServerManager {
     // is, reject the server and trigger its expiration. The next time it comes
     // in, it should have been removed from serverAddressToServerInfo and queued
     // for processing by ProcessServerShutdown.
-    ServerName sn = ServerName.valueOf(ia.getHostName(), port, serverStartcode);
-    checkClockSkew(sn, serverCurrentTime);
+
+    final String hostname = request.hasUseThisHostnameInstead() ?
+        request.getUseThisHostnameInstead() :ia.getHostName();
+    ServerName sn = ServerName.valueOf(hostname, request.getPort(),
+      request.getServerStartCode());
+    checkClockSkew(sn, request.getServerCurrentTime());
     checkIsDead(sn, "STARTUP");
     if (!checkAndRecordNewServer(sn, ServerLoad.EMPTY_SERVERLOAD)) {
       LOG.warn("THIS SHOULD NOT HAPPEN, RegionServerStartup"
@@ -255,6 +273,18 @@ public class ServerManager {
     return sn;
   }
 
+  private ConcurrentNavigableMap<byte[], Long> getOrCreateStoreFlushedSequenceId(
+    byte[] regionName) {
+    ConcurrentNavigableMap<byte[], Long> storeFlushedSequenceId =
+        storeFlushedSequenceIdsByRegion.get(regionName);
+    if (storeFlushedSequenceId != null) {
+      return storeFlushedSequenceId;
+    }
+    storeFlushedSequenceId = new ConcurrentSkipListMap<byte[], Long>(Bytes.BYTES_COMPARATOR);
+    ConcurrentNavigableMap<byte[], Long> alreadyPut =
+        storeFlushedSequenceIdsByRegion.putIfAbsent(regionName, storeFlushedSequenceId);
+    return alreadyPut == null ? storeFlushedSequenceId : alreadyPut;
+  }
   /**
    * Updates last flushed sequence Ids for the regions on server sn
    * @param sn
@@ -266,18 +296,33 @@ public class ServerManager {
       byte[] encodedRegionName = Bytes.toBytes(HRegionInfo.encodeRegionName(entry.getKey()));
       Long existingValue = flushedSequenceIdByRegion.get(encodedRegionName);
       long l = entry.getValue().getCompleteSequenceId();
-      if (existingValue != null) {
-        if (l != -1 && l < existingValue) {
-          LOG.warn("RegionServer " + sn +
-              " indicates a last flushed sequence id (" + entry.getValue() +
-              ") that is less than the previous last flushed sequence id (" +
-              existingValue + ") for region " +
-              Bytes.toString(entry.getKey()) + " Ignoring.");
-
-          continue; // Don't let smaller sequence ids override greater sequence ids.
+      // Don't let smaller sequence ids override greater sequence ids.
+      if (LOG.isTraceEnabled()) {
+        LOG.trace(Bytes.toString(encodedRegionName) + ", existingValue=" + existingValue +
+          ", completeSequenceId=" + l);
+      }
+      if (existingValue == null || (l != HConstants.NO_SEQNUM && l > existingValue)) {
+        flushedSequenceIdByRegion.put(encodedRegionName, l);
+      } else if (l != HConstants.NO_SEQNUM && l < existingValue) {
+        LOG.warn("RegionServer " + sn + " indicates a last flushed sequence id ("
+            + l + ") that is less than the previous last flushed sequence id ("
+            + existingValue + ") for region " + Bytes.toString(entry.getKey()) + " Ignoring.");
+      }
+      ConcurrentNavigableMap<byte[], Long> storeFlushedSequenceId =
+          getOrCreateStoreFlushedSequenceId(encodedRegionName);
+      for (StoreSequenceId storeSeqId : entry.getValue().getStoreCompleteSequenceId()) {
+        byte[] family = storeSeqId.getFamilyName().toByteArray();
+        existingValue = storeFlushedSequenceId.get(family);
+        l = storeSeqId.getSequenceId();
+        if (LOG.isTraceEnabled()) {
+          LOG.trace(Bytes.toString(encodedRegionName) + ", family=" + Bytes.toString(family) +
+            ", existingValue=" + existingValue + ", completeSequenceId=" + l);
+        }
+        // Don't let smaller sequence ids override greater sequence ids.
+        if (existingValue == null || (l != HConstants.NO_SEQNUM && l > existingValue.longValue())) {
+          storeFlushedSequenceId.put(family, l);
         }
       }
-      flushedSequenceIdByRegion.put(encodedRegionName, l);
     }
   }
 
@@ -416,12 +461,20 @@ public class ServerManager {
     this.rsAdmins.remove(serverName);
   }
 
-  public long getLastFlushedSequenceId(byte[] encodedRegionName) {
-    long seqId = -1L;
-    if (flushedSequenceIdByRegion.containsKey(encodedRegionName)) {
-      seqId = flushedSequenceIdByRegion.get(encodedRegionName);
+  public RegionStoreSequenceIds getLastFlushedSequenceId(byte[] encodedRegionName) {
+    RegionStoreSequenceIds.Builder builder = RegionStoreSequenceIds.newBuilder();
+    Long seqId = flushedSequenceIdByRegion.get(encodedRegionName);
+    builder.setLastFlushedSequenceId(seqId != null ? seqId.longValue() : HConstants.NO_SEQNUM);
+    Map<byte[], Long> storeFlushedSequenceId =
+        storeFlushedSequenceIdsByRegion.get(encodedRegionName);
+    if (storeFlushedSequenceId != null) {
+      for (Map.Entry<byte[], Long> entry : storeFlushedSequenceId.entrySet()) {
+        builder.addStoreSequenceId(StoreSequenceId.newBuilder()
+            .setFamilyName(ByteString.copyFrom(entry.getKey()))
+            .setSequenceId(entry.getValue().longValue()).build());
+      }
     }
-    return seqId;
+    return builder.build();
   }
 
   /**
@@ -539,7 +592,7 @@ public class ServerManager {
       }
       return;
     }
-    if (!services.isServerShutdownHandlerEnabled()) {
+    if (!services.isServerCrashProcessingEnabled()) {
       LOG.info("Master doesn't enable ServerShutdownHandler during initialization, "
           + "delay expiring server " + serverName);
       this.queuedDeadServers.add(serverName);
@@ -551,18 +604,8 @@ public class ServerManager {
           " but server shutdown already in progress");
       return;
     }
-    synchronized (onlineServers) {
-      if (!this.onlineServers.containsKey(serverName)) {
-        LOG.warn("Expiration of " + serverName + " but server not online");
-      }
-      // Remove the server from the known servers lists and update load info BUT
-      // add to deadservers first; do this so it'll show in dead servers list if
-      // not in online servers list.
-      this.deadservers.add(serverName);
-      this.onlineServers.remove(serverName);
-      onlineServers.notifyAll();
-    }
-    this.rsAdmins.remove(serverName);
+    moveFromOnelineToDeadServers(serverName);
+
     // If cluster is going down, yes, servers are going to be expiring; don't
     // process as a dead server
     if (this.clusterShutdown) {
@@ -575,13 +618,8 @@ public class ServerManager {
     }
 
     boolean carryingMeta = services.getAssignmentManager().isCarryingMeta(serverName);
-    if (carryingMeta) {
-      this.services.getExecutorService().submit(new MetaServerShutdownHandler(this.master,
-        this.services, this.deadservers, serverName));
-    } else {
-      this.services.getExecutorService().submit(new ServerShutdownHandler(this.master,
-        this.services, this.deadservers, serverName, true));
-    }
+    this.services.getMasterProcedureExecutor().
+      submitProcedure(new ServerCrashProcedure(serverName, true, carryingMeta));
     LOG.debug("Added=" + serverName +
       " to dead servers, submitted shutdown handler to be executed meta=" + carryingMeta);
 
@@ -593,8 +631,20 @@ public class ServerManager {
     }
   }
 
-  public synchronized void processDeadServer(final ServerName serverName) {
-    this.processDeadServer(serverName, false);
+  @VisibleForTesting
+  public void moveFromOnelineToDeadServers(final ServerName sn) {
+    synchronized (onlineServers) {
+      if (!this.onlineServers.containsKey(sn)) {
+        LOG.warn("Expiration of " + sn + " but server not online");
+      }
+      // Remove the server from the known servers lists and update load info BUT
+      // add to deadservers first; do this so it'll show in dead servers list if
+      // not in online servers list.
+      this.deadservers.add(sn);
+      this.onlineServers.remove(sn);
+      onlineServers.notifyAll();
+    }
+    this.rsAdmins.remove(sn);
   }
 
   public synchronized void processDeadServer(final ServerName serverName, boolean shouldSplitWal) {
@@ -612,9 +662,8 @@ public class ServerManager {
     }
 
     this.deadservers.add(serverName);
-    this.services.getExecutorService().submit(
-      new ServerShutdownHandler(this.master, this.services, this.deadservers, serverName,
-          shouldSplitWal));
+    this.services.getMasterProcedureExecutor().
+    submitProcedure(new ServerCrashProcedure(serverName, shouldSplitWal, false));
   }
 
   /**
@@ -622,7 +671,7 @@ public class ServerManager {
    * called after HMaster#assignMeta and AssignmentManager#joinCluster.
    * */
   synchronized void processQueuedDeadServers() {
-    if (!services.isServerShutdownHandlerEnabled()) {
+    if (!services.isServerCrashProcessingEnabled()) {
       LOG.info("Master hasn't enabled ServerShutdownHandler");
     }
     Iterator<ServerName> serverIterator = queuedDeadServers.iterator();
@@ -637,8 +686,8 @@ public class ServerManager {
       LOG.info("AssignmentManager hasn't finished failover cleanup; waiting");
     }
 
-    for(ServerName tmpServerName : requeuedDeadServers.keySet()){
-      processDeadServer(tmpServerName, requeuedDeadServers.get(tmpServerName));
+    for (Map.Entry<ServerName, Boolean> entry : requeuedDeadServers.entrySet()) {
+      processDeadServer(entry.getKey(), entry.getValue());
     }
     requeuedDeadServers.clear();
   }
@@ -765,6 +814,56 @@ public class ServerManager {
   public boolean sendRegionClose(ServerName server,
       HRegionInfo region) throws IOException {
     return sendRegionClose(server, region, null);
+  }
+
+  /**
+   * Sends a WARMUP RPC to the specified server to warmup the specified region.
+   * <p>
+   * A region server could reject the close request because it either does not
+   * have the specified region or the region is being split.
+   * @param server server to warmup a region
+   * @param region region to  warmup
+   */
+  public void sendRegionWarmup(ServerName server,
+      HRegionInfo region) {
+    if (server == null) return;
+    try {
+      AdminService.BlockingInterface admin = getRsAdmin(server);
+      ProtobufUtil.warmupRegion(admin, region);
+    } catch (IOException e) {
+      LOG.error("Received exception in RPC for warmup server:" +
+        server + "region: " + region +
+        "exception: " + e);
+    }
+  }
+
+  /**
+   * Contacts a region server and waits up to timeout ms
+   * to close the region.  This bypasses the active hmaster.
+   */
+  public static void closeRegionSilentlyAndWait(ClusterConnection connection, 
+    ServerName server, HRegionInfo region, long timeout) throws IOException, InterruptedException {
+    AdminService.BlockingInterface rs = connection.getAdmin(server);
+    try {
+      ProtobufUtil.closeRegion(rs, server, region.getRegionName());
+    } catch (IOException e) {
+      LOG.warn("Exception when closing region: " + region.getRegionNameAsString(), e);
+    }
+    long expiration = timeout + System.currentTimeMillis();
+    while (System.currentTimeMillis() < expiration) {
+      try {
+        HRegionInfo rsRegion =
+          ProtobufUtil.getRegionInfo(rs, region.getRegionName());
+        if (rsRegion == null) return;
+      } catch (IOException ioe) {
+        if (ioe instanceof NotServingRegionException) // no need to retry again
+          return;
+        LOG.warn("Exception when retrieving regioninfo from: " + region.getRegionNameAsString(), ioe);
+      }
+      Thread.sleep(1000);
+    }
+    throw new IOException("Region " + region + " failed to close within"
+        + " timeout " + timeout);
   }
 
   /**

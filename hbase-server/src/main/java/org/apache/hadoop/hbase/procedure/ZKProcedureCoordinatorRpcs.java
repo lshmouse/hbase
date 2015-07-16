@@ -38,7 +38,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
  */
 @InterfaceAudience.Private
 public class ZKProcedureCoordinatorRpcs implements ProcedureCoordinatorRpcs {
-  public static final Log LOG = LogFactory.getLog(ZKProcedureCoordinatorRpcs.class);
+  private static final Log LOG = LogFactory.getLog(ZKProcedureCoordinatorRpcs.class);
   private ZKProcedureUtil zkProc = null;
   protected ProcedureCoordinator coordinator = null;  // if started this should be non-null
 
@@ -275,7 +275,10 @@ public class ZKProcedureCoordinatorRpcs implements ProcedureCoordinatorRpcs {
     ForeignException ee = null;
     try {
       byte[] data = ZKUtil.getData(zkProc.getWatcher(), abortNode);
-      if (!ProtobufUtil.isPBMagicPrefix(data)) {
+      if (data == null || data.length == 0) {
+        // ignore
+        return;
+      } else if (!ProtobufUtil.isPBMagicPrefix(data)) {
         LOG.warn("Got an error notification for op:" + abortNode
             + " but we can't read the information. Killing the procedure.");
         // we got a remote exception, but we can't describe it

@@ -49,7 +49,7 @@ import com.google.common.primitives.Ints;
 @InterfaceAudience.Private
 @JsonIgnoreProperties({"indexStatistics", "freeSize", "usedSize"})
 public final class BucketAllocator {
-  static final Log LOG = LogFactory.getLog(BucketAllocator.class);
+  private static final Log LOG = LogFactory.getLog(BucketAllocator.class);
 
   @JsonIgnoreProperties({"completelyFree", "uninstantiated"})
   public final static class Bucket {
@@ -407,7 +407,8 @@ public final class BucketAllocator {
   /**
    * Allocate a block with specified size. Return the offset
    * @param blockSize size of block
-   * @throws BucketAllocatorException,CacheFullException
+   * @throws BucketAllocatorException
+   * @throws CacheFullException
    * @return the offset in the IOEngine
    */
   public synchronized long allocateBlock(int blockSize) throws CacheFullException,

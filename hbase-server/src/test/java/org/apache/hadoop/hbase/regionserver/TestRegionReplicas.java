@@ -33,6 +33,7 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.TableName;
@@ -68,7 +69,7 @@ public class TestRegionReplicas {
   private static final Log LOG = LogFactory.getLog(TestRegionReplicas.class);
 
   private static final int NB_SERVERS = 1;
-  private static HTable table;
+  private static Table table;
   private static final byte[] row = "TestRegionReplicas".getBytes();
 
   private static HRegionInfo hriPrimary;
@@ -91,7 +92,9 @@ public class TestRegionReplicas {
     // Create table then get the single region for our new table.
     table = HTU.createTable(tableName, f);
 
-    hriPrimary = table.getRegionLocation(row, false).getRegionInfo();
+    try (RegionLocator locator = HTU.getConnection().getRegionLocator(tableName)) {
+      hriPrimary = locator.getRegionLocation(row, false).getRegionInfo();
+    }
 
     // mock a secondary region info to open
     hriSecondary = new HRegionInfo(hriPrimary.getTable(), hriPrimary.getStartKey(),
@@ -150,12 +153,13 @@ public class TestRegionReplicas {
       // assert that we can read back from primary
       Assert.assertEquals(1000, HTU.countRows(table));
       // flush so that region replica can read
-      getRS().getRegionByEncodedName(hriPrimary.getEncodedName()).flushcache();
+      Region region = getRS().getRegionByEncodedName(hriPrimary.getEncodedName());
+      region.flush(true);
 
       openRegion(HTU, getRS(), hriSecondary);
 
       // first try directly against region
-      HRegion region = getRS().getFromOnlineRegions(hriSecondary.getEncodedName());
+      region = getRS().getFromOnlineRegions(hriSecondary.getEncodedName());
       assertGet(region, 42, true);
 
       assertGetRpc(hriSecondary, 42, true);
@@ -173,7 +177,8 @@ public class TestRegionReplicas {
       // assert that we can read back from primary
       Assert.assertEquals(1000, HTU.countRows(table));
       // flush so that region replica can read
-      getRS().getRegionByEncodedName(hriPrimary.getEncodedName()).flushcache();
+      Region region = getRS().getRegionByEncodedName(hriPrimary.getEncodedName());
+      region.flush(true);
 
       openRegion(HTU, getRS(), hriSecondary);
 
@@ -190,7 +195,7 @@ public class TestRegionReplicas {
     }
   }
 
-  private void assertGet(HRegion region, int value, boolean expect) throws IOException {
+  private void assertGet(Region region, int value, boolean expect) throws IOException {
     byte[] row = Bytes.toBytes(String.valueOf(value));
     Get get = new Get(row);
     Result result = region.get(get);
@@ -242,14 +247,15 @@ public class TestRegionReplicas {
       Assert.assertEquals(1000, HTU.countRows(table));
       // flush so that region replica can read
       LOG.info("Flushing primary region");
-      getRS().getRegionByEncodedName(hriPrimary.getEncodedName()).flushcache();
+      Region region = getRS().getRegionByEncodedName(hriPrimary.getEncodedName());
+      region.flush(true);
 
       // ensure that chore is run
       LOG.info("Sleeping for " + (4 * refreshPeriod));
       Threads.sleep(4 * refreshPeriod);
 
       LOG.info("Checking results from secondary region replica");
-      HRegion secondaryRegion = getRS().getFromOnlineRegions(hriSecondary.getEncodedName());
+      Region secondaryRegion = getRS().getFromOnlineRegions(hriSecondary.getEncodedName());
       Assert.assertEquals(1, secondaryRegion.getStore(f).getStorefilesCount());
 
       assertGet(secondaryRegion, 42, true);
@@ -258,10 +264,12 @@ public class TestRegionReplicas {
 
       //load some data to primary
       HTU.loadNumericRows(table, f, 1000, 1100);
-      getRS().getRegionByEncodedName(hriPrimary.getEncodedName()).flushcache();
+      region = getRS().getRegionByEncodedName(hriPrimary.getEncodedName());
+      region.flush(true);
 
       HTU.loadNumericRows(table, f, 2000, 2100);
-      getRS().getRegionByEncodedName(hriPrimary.getEncodedName()).flushcache();
+      region = getRS().getRegionByEncodedName(hriPrimary.getEncodedName());
+      region.flush(true);
 
       // ensure that chore is run
       Threads.sleep(4 * refreshPeriod);
@@ -428,20 +436,21 @@ public class TestRegionReplicas {
       LOG.info("Loading data to primary region");
       for (int i = 0; i < 3; ++i) {
         HTU.loadNumericRows(table, f, i * 1000, (i + 1) * 1000);
-        getRS().getRegionByEncodedName(hriPrimary.getEncodedName()).flushcache();
+        Region region = getRS().getRegionByEncodedName(hriPrimary.getEncodedName());
+        region.flush(true);
       }
 
-      HRegion primaryRegion = getRS().getFromOnlineRegions(hriPrimary.getEncodedName());
+      Region primaryRegion = getRS().getFromOnlineRegions(hriPrimary.getEncodedName());
       Assert.assertEquals(3, primaryRegion.getStore(f).getStorefilesCount());
 
       // Refresh store files on the secondary
-      HRegion secondaryRegion = getRS().getFromOnlineRegions(hriSecondary.getEncodedName());
+      Region secondaryRegion = getRS().getFromOnlineRegions(hriSecondary.getEncodedName());
       secondaryRegion.getStore(f).refreshStoreFiles();
       Assert.assertEquals(3, secondaryRegion.getStore(f).getStorefilesCount());
 
       // force compaction
       LOG.info("Force Major compaction on primary region " + hriPrimary);
-      primaryRegion.compactStores(true);
+      primaryRegion.compact(true);
       Assert.assertEquals(1, primaryRegion.getStore(f).getStorefilesCount());
 
       // scan all the hfiles on the secondary.
@@ -460,7 +469,7 @@ public class TestRegionReplicas {
         do {
           keys++;
 
-          Cell cell = scanner.getKeyValue();
+          Cell cell = scanner.getCell();
           sum += Integer.parseInt(Bytes.toString(cell.getRowArray(),
             cell.getRowOffset(), cell.getRowLength()));
         } while (scanner.next());

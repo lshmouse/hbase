@@ -32,6 +32,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
@@ -41,7 +42,7 @@ import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.master.cleaner.BaseHFileCleanerDelegate;
 import org.apache.hadoop.hbase.master.cleaner.HFileCleaner;
-import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
@@ -169,7 +170,7 @@ public class TestZooKeeperTableArchiveClient {
 
     // create the region
     HColumnDescriptor hcd = new HColumnDescriptor(TEST_FAM);
-    HRegion region = UTIL.createTestRegion(STRING_TABLE_NAME, hcd);
+    Region region = UTIL.createTestRegion(STRING_TABLE_NAME, hcd);
 
     loadFlushAndCompact(region, TEST_FAM);
 
@@ -212,18 +213,19 @@ public class TestZooKeeperTableArchiveClient {
     Configuration conf = UTIL.getConfiguration();
     // setup the delegate
     Stoppable stop = new StoppableImplementation();
+    final ChoreService choreService = new ChoreService("TEST_SERVER_NAME");
     HFileCleaner cleaner = setupAndCreateCleaner(conf, fs, archiveDir, stop);
     List<BaseHFileCleanerDelegate> cleaners = turnOnArchiving(STRING_TABLE_NAME, cleaner);
     final LongTermArchivingHFileCleaner delegate = (LongTermArchivingHFileCleaner) cleaners.get(0);
 
     // create the region
     HColumnDescriptor hcd = new HColumnDescriptor(TEST_FAM);
-    HRegion region = UTIL.createTestRegion(STRING_TABLE_NAME, hcd);
+    Region region = UTIL.createTestRegion(STRING_TABLE_NAME, hcd);
     loadFlushAndCompact(region, TEST_FAM);
 
     // create the another table that we don't archive
     hcd = new HColumnDescriptor(TEST_FAM);
-    HRegion otherRegion = UTIL.createTestRegion(otherTable, hcd);
+    Region otherRegion = UTIL.createTestRegion(otherTable, hcd);
     loadFlushAndCompact(otherRegion, TEST_FAM);
 
     // get the current hfiles in the archive directory
@@ -250,7 +252,7 @@ public class TestZooKeeperTableArchiveClient {
     // need to be checked) in 'otherTable' and the files (which should be retained) in the 'table'
     CountDownLatch finished = setupCleanerWatching(delegate, cleaners, files.size() + 3);
     // run the cleaner
-    cleaner.start();
+    choreService.scheduleChore(cleaner);
     // wait for the cleaner to check all the files
     finished.await();
     // stop the cleaner
@@ -377,7 +379,7 @@ public class TestZooKeeperTableArchiveClient {
     return allFiles;
   }
 
-  private void loadFlushAndCompact(HRegion region, byte[] family) throws IOException {
+  private void loadFlushAndCompact(Region region, byte[] family) throws IOException {
     // create two hfiles in the region
     createHFileInRegion(region, family);
     createHFileInRegion(region, family);
@@ -389,7 +391,7 @@ public class TestZooKeeperTableArchiveClient {
 
     // compact the two files into one file to get files in the archive
     LOG.debug("Compacting stores");
-    region.compactStores(true);
+    region.compact(true);
   }
 
   /**
@@ -398,13 +400,13 @@ public class TestZooKeeperTableArchiveClient {
    * @param columnFamily family for which to add data
    * @throws IOException
    */
-  private void createHFileInRegion(HRegion region, byte[] columnFamily) throws IOException {
+  private void createHFileInRegion(Region region, byte[] columnFamily) throws IOException {
     // put one row in the region
     Put p = new Put(Bytes.toBytes("row"));
     p.add(columnFamily, Bytes.toBytes("Qual"), Bytes.toBytes("v1"));
     region.put(p);
     // flush the region to make a store file
-    region.flushcache();
+    region.flush(true);
   }
 
   /**
@@ -412,8 +414,9 @@ public class TestZooKeeperTableArchiveClient {
    */
   private void runCleaner(HFileCleaner cleaner, CountDownLatch finished, Stoppable stop)
       throws InterruptedException {
+    final ChoreService choreService = new ChoreService("CLEANER_SERVER_NAME");
     // run the cleaner
-    cleaner.start();
+    choreService.scheduleChore(cleaner);
     // wait for the cleaner to check all the files
     finished.await();
     // stop the cleaner

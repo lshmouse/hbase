@@ -30,6 +30,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionLocation;
@@ -38,15 +39,15 @@ import org.apache.hadoop.hbase.IntegrationTestingUtility;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.chaos.factories.MonkeyFactory;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.BufferedMutator;
+import org.apache.hadoop.hbase.client.BufferedMutatorParams;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Delete;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HConnection;
-import org.apache.hadoop.hbase.client.HConnectionManager;
-import org.apache.hadoop.hbase.client.HTableInterface;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.mapreduce.Import;
@@ -74,24 +75,24 @@ import org.junit.experimental.categories.Category;
 
 /**
  * IT test used to verify the deletes with visibility labels.
- * The test creates three tables tablename_0, tablename_1 and tablename_2 and each table 
+ * The test creates three tables tablename_0, tablename_1 and tablename_2 and each table
  * is associated with a unique pair of labels.
- * Another common table with the name 'commontable' is created and it has the data combined 
- * from all these 3 tables such that there are 3 versions of every row but the visibility label 
- * in every row corresponds to the table from which the row originated.  
- * Then deletes are issued to the common table by selecting the visibility label 
- * associated with each of the smaller tables. 
- * After the delete is issued with one set of visibility labels we try to scan the common table 
- * with each of the visibility pairs defined for the 3 tables.  
- * So after the first delete is issued, a scan with the first set of visibility labels would 
- * return zero result whereas the scan issued with the other two sets of visibility labels 
- * should return all the rows corresponding to that set of visibility labels.  The above 
- * process of delete and scan is repeated until after the last set of visibility labels are 
+ * Another common table with the name 'commontable' is created and it has the data combined
+ * from all these 3 tables such that there are 3 versions of every row but the visibility label
+ * in every row corresponds to the table from which the row originated.
+ * Then deletes are issued to the common table by selecting the visibility label
+ * associated with each of the smaller tables.
+ * After the delete is issued with one set of visibility labels we try to scan the common table
+ * with each of the visibility pairs defined for the 3 tables.
+ * So after the first delete is issued, a scan with the first set of visibility labels would
+ * return zero result whereas the scan issued with the other two sets of visibility labels
+ * should return all the rows corresponding to that set of visibility labels.  The above
+ * process of delete and scan is repeated until after the last set of visibility labels are
  * used for the deletes the common table should not return any row.
- * 
- * To use this 
+ *
+ * To use this
  * ./hbase org.apache.hadoop.hbase.test.IntegrationTestBigLinkedListWithVisibility Loop 1 1 20000 /tmp 1 10000
- * or 
+ * or
  * ./hbase org.apache.hadoop.hbase.IntegrationTestsDriver -r .*IntegrationTestBigLinkedListWithVisibility.*
  */
 @Category(IntegrationTests.class)
@@ -128,18 +129,20 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
     protected void createSchema() throws IOException {
       LOG.info("Creating tables");
       // Create three tables
-      boolean acl = AccessControlClient.isAccessControllerRunning(getConf());
+      boolean acl = AccessControlClient.isAccessControllerRunning(ConnectionFactory
+          .createConnection(getConf()));
       if(!acl) {
         LOG.info("No ACL available.");
       }
-      Admin admin = new HBaseAdmin(getConf());
-      for (int i = 0; i < DEFAULT_TABLES_COUNT; i++) {
-        TableName tableName = IntegrationTestBigLinkedListWithVisibility.getTableName(i);
-        createTable(admin, tableName, false, acl);
+      try (Connection conn = ConnectionFactory.createConnection(getConf());
+          Admin admin = conn.getAdmin()) {
+        for (int i = 0; i < DEFAULT_TABLES_COUNT; i++) {
+          TableName tableName = IntegrationTestBigLinkedListWithVisibility.getTableName(i);
+          createTable(admin, tableName, false, acl);
+        }
+        TableName tableName = TableName.valueOf(COMMON_TABLE_NAME);
+        createTable(admin, tableName, true, acl);
       }
-      TableName tableName = TableName.valueOf(COMMON_TABLE_NAME);
-      createTable(admin, tableName, true, acl);
-      admin.close();
     }
 
     private void createTable(Admin admin, TableName tableName, boolean setVersion,
@@ -156,8 +159,8 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
           LOG.info("Granting permissions for user " + USER.getShortName());
           Permission.Action[] actions = { Permission.Action.READ };
           try {
-            AccessControlClient.grant(getConf(), tableName, USER.getShortName(), null, null,
-                actions);
+            AccessControlClient.grant(ConnectionFactory.createConnection(getConf()), tableName,
+                USER.getShortName(), null, null, actions);
           } catch (Throwable e) {
             LOG.fatal("Error in granting permission for the user " + USER.getShortName(), e);
             throw new IOException(e);
@@ -172,8 +175,7 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
     }
 
     static class VisibilityGeneratorMapper extends GeneratorMapper {
-      Table[] tables = new Table[DEFAULT_TABLES_COUNT];
-      Table commonTable = null;
+      BufferedMutator[] tables = new BufferedMutator[DEFAULT_TABLES_COUNT];
 
       @Override
       protected void setup(org.apache.hadoop.mapreduce.Mapper.Context context) throws IOException,
@@ -184,8 +186,9 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
       @Override
       protected void instantiateHTable() throws IOException {
         for (int i = 0; i < DEFAULT_TABLES_COUNT; i++) {
-          Table table = connection.getTable(getTableName(i));
-          //table.setWriteBufferSize(4 * 1024 * 1024);
+          BufferedMutatorParams params = new BufferedMutatorParams(getTableName(i));
+          params.writeBufferSize(4 * 1024 * 1024);
+          BufferedMutator table = connection.getBufferedMutator(params);
           this.tables[i] = table;
         }
       }
@@ -209,7 +212,7 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
           for (int j = 0; j < DEFAULT_TABLES_COUNT; j++) {
             Put put = new Put(current[i]);
             put.add(FAMILY_NAME, COLUMN_PREV, prev == null ? NO_KEY : prev[i]);
-            
+
             if (count >= 0) {
               put.add(FAMILY_NAME, COLUMN_COUNT, Bytes.toBytes(count + i));
             }
@@ -218,7 +221,7 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
             }
             visibilityExps = split[j * 2] + OR + split[(j * 2) + 1];
             put.setCellVisibility(new CellVisibility(visibilityExps));
-            tables[j].put(put);
+            tables[j].mutate(put);
             try {
               Thread.sleep(1);
             } catch (InterruptedException e) {
@@ -329,7 +332,7 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
     @Override
     protected void processKV(ImmutableBytesWritable key, Result result,
         org.apache.hadoop.mapreduce.Mapper.Context context, Put put,
-        org.apache.hadoop.hbase.client.Delete delete) throws 
+        org.apache.hadoop.hbase.client.Delete delete) throws
         IOException, InterruptedException {
       String visibilityExps = split[index * 2] + OR + split[(index * 2) + 1];
       for (Cell kv : result.rawCells()) {
@@ -341,7 +344,7 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
           delete = new Delete(key.get());
         }
         delete.setCellVisibility(new CellVisibility(visibilityExps));
-        delete.deleteFamily(kv.getFamily());
+        delete.deleteFamily(CellUtil.cloneFamily(kv));
       }
       if (delete != null) {
         context.write(key, delete);
@@ -354,14 +357,14 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
     super.addOptions();
     addOptWithArg("u", USER_OPT, "User name");
   }
-  
+
   @Override
   protected void processOptions(CommandLine cmd) {
     super.processOptions(cmd);
     if (cmd.hasOption(USER_OPT)) {
       userName = cmd.getOptionValue(USER_OPT);
     }
-    
+
   }
   @Override
   public void setUpCluster() throws Exception {
@@ -383,8 +386,8 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
 
   private void addLabels() throws Exception {
     try {
-      VisibilityClient.addLabels(util.getConfiguration(), labels.split(COMMA));
-      VisibilityClient.setAuths(util.getConfiguration(), labels.split(COMMA), USER.getName());
+      VisibilityClient.addLabels(util.getConnection(), labels.split(COMMA));
+      VisibilityClient.setAuths(util.getConnection(), labels.split(COMMA), USER.getName());
     } catch (Throwable t) {
       throw new IOException(t);
     }
@@ -448,7 +451,7 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
     @Override
     protected void handleFailure(Counters counters) throws IOException {
       Configuration conf = job.getConfiguration();
-      HConnection conn = HConnectionManager.getConnection(conf);
+      HConnection conn = (HConnection) ConnectionFactory.createConnection(conf);
       TableName tableName = TableName.valueOf(COMMON_TABLE_NAME);
       CounterGroup g = counters.getGroup("undef");
       Iterator<Counter> it = g.iterator();
@@ -559,7 +562,7 @@ public class IntegrationTestBigLinkedListWithVisibility extends IntegrationTestB
       }
     }
 
-    private void verify(int numReducers, long expectedNumNodes, 
+    private void verify(int numReducers, long expectedNumNodes,
         Path iterationOutput, Verify verify) throws Exception {
       verify.setConf(getConf());
       int retCode = verify.run(iterationOutput, numReducers);

@@ -22,9 +22,9 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.KeyValue.KVComparator;
 import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.ByteBufferUtils;
@@ -305,7 +305,7 @@ public class DiffKeyDeltaEncoder extends BufferedDataBlockEncoder {
   }
 
   @Override
-  public ByteBuffer getFirstKeyInBlock(ByteBuffer block) {
+  public Cell getFirstKeyCellInBlock(ByteBuffer block) {
     block.mark();
     block.position(Bytes.SIZEOF_INT);
     byte familyLength = block.get();
@@ -350,7 +350,7 @@ public class DiffKeyDeltaEncoder extends BufferedDataBlockEncoder {
     block.get(result.array(), pos, Bytes.SIZEOF_BYTE);
 
     block.reset();
-    return result;
+    return new KeyValue.KeyOnlyKeyValue(result.array(), 0, keyLength);
   }
 
   @Override
@@ -372,7 +372,7 @@ public class DiffKeyDeltaEncoder extends BufferedDataBlockEncoder {
   }
 
   @Override
-  public EncodedSeeker createSeeker(KVComparator comparator,
+  public EncodedSeeker createSeeker(CellComparator comparator,
       HFileBlockDecodingContext decodingCtx) {
     return new BufferedEncodedSeeker<DiffSeekerState>(comparator, decodingCtx) {
       private byte[] familyNameWithSize;

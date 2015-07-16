@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
@@ -284,7 +285,7 @@ public class RedundantKVGenerator {
       }
     }
 
-    Collections.sort(result, KeyValue.COMPARATOR);
+    Collections.sort(result, CellComparator.COMPARATOR);
 
     return result;
   }
@@ -300,7 +301,7 @@ public class RedundantKVGenerator {
     for (KeyValue kv : keyValues) {
       totalSize += kv.getLength();
       if (includesMemstoreTS) {
-        totalSize += WritableUtils.getVIntSize(kv.getMvccVersion());
+        totalSize += WritableUtils.getVIntSize(kv.getSequenceId());
       }
     }
 
@@ -308,7 +309,7 @@ public class RedundantKVGenerator {
     for (KeyValue kv : keyValues) {
       result.put(kv.getBuffer(), kv.getOffset(), kv.getLength());
       if (includesMemstoreTS) {
-        ByteBufferUtils.writeVLong(result, kv.getMvccVersion());
+        ByteBufferUtils.writeVLong(result, kv.getSequenceId());
       }
     }
     return result;

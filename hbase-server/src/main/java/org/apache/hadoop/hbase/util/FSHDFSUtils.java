@@ -170,7 +170,7 @@ public class FSHDFSUtils extends FSUtils {
   boolean recoverDFSFileLease(final DistributedFileSystem dfs, final Path p,
       final Configuration conf, final CancelableProgressable reporter)
   throws IOException {
-    LOG.info("Recovering lease on dfs file " + p);
+    LOG.info("Recover lease on dfs file " + p);
     long startWaiting = EnvironmentEdgeManager.currentTime();
     // Default is 15 minutes. It's huge, but the idea is that if we have a major issue, HDFS
     // usually needs 10 minutes before marking the nodes as dead. So we're putting ourselves
@@ -180,9 +180,11 @@ public class FSHDFSUtils extends FSUtils {
     long firstPause = conf.getInt("hbase.lease.recovery.first.pause", 4000);
     // This should be set to how long it'll take for us to timeout against primary datanode if it
     // is dead.  We set it to 61 seconds, 1 second than the default READ_TIMEOUT in HDFS, the
-    // default value for DFS_CLIENT_SOCKET_TIMEOUT_KEY.
-    long subsequentPause = conf.getInt("hbase.lease.recovery.dfs.timeout", 61 * 1000);
-    
+    // default value for DFS_CLIENT_SOCKET_TIMEOUT_KEY. If recovery is still failing after this
+    // timeout, then further recovery will take liner backoff with this base, to avoid endless
+    // preemptions when this value is not properly configured.
+    long subsequentPauseBase = conf.getLong("hbase.lease.recovery.dfs.timeout", 61 * 1000);
+
     Method isFileClosedMeth = null;
     // whether we need to look for isFileClosed method
     boolean findIsFileClosedMeth = true;
@@ -198,11 +200,11 @@ public class FSHDFSUtils extends FSUtils {
         if (nbAttempt == 0) {
           Thread.sleep(firstPause);
         } else {
-          // Cycle here until subsequentPause elapses.  While spinning, check isFileClosed if
-          // available (should be in hadoop 2.0.5... not in hadoop 1 though.
+          // Cycle here until (subsequentPause * nbAttempt) elapses.  While spinning, check
+          // isFileClosed if available (should be in hadoop 2.0.5... not in hadoop 1 though.
           long localStartWaiting = EnvironmentEdgeManager.currentTime();
           while ((EnvironmentEdgeManager.currentTime() - localStartWaiting) <
-              subsequentPause) {
+              subsequentPauseBase * nbAttempt) {
             Thread.sleep(conf.getInt("hbase.lease.recovery.pause", 1000));
             if (findIsFileClosedMeth) {
               try {
@@ -257,7 +259,7 @@ public class FSHDFSUtils extends FSUtils {
     boolean recovered = false;
     try {
       recovered = dfs.recoverLease(p);
-      LOG.info("recoverLease=" + recovered + ", " +
+      LOG.info((recovered? "Recovered lease, ": "Failed to recover lease, ") +
         getLogMessageDetail(nbAttempt, p, startWaiting));
     } catch (IOException e) {
       if (e instanceof LeaseExpiredException && e.getMessage().contains("File does not exist")) {

@@ -44,7 +44,7 @@ import java.util.concurrent.CountDownLatch;
  */
 @InterfaceAudience.Private
 public class ZKPermissionWatcher extends ZooKeeperListener {
-  private static Log LOG = LogFactory.getLog(ZKPermissionWatcher.class);
+  private static final Log LOG = LogFactory.getLog(ZKPermissionWatcher.class);
   // parent node for permissions lists
   static final String ACL_NODE = "acl";
   TableAuthManager authManager;
@@ -208,6 +208,23 @@ public class ZKPermissionWatcher extends ZooKeeperListener {
       LOG.warn("No acl notify node of table '" + tableName + "'");
     } catch (KeeperException e) {
       LOG.error("Failed deleting acl node of table '" + tableName + "'", e);
+      watcher.abort("Failed deleting node " + zkNode, e);
+    }
+  }
+
+  /***
+   * Delete the acl notify node of namespace
+   */
+  public void deleteNamespaceACLNode(final String namespace) {
+    String zkNode = ZKUtil.joinZNode(watcher.baseZNode, ACL_NODE);
+    zkNode = ZKUtil.joinZNode(zkNode, AccessControlLists.NAMESPACE_PREFIX + namespace);
+
+    try {
+      ZKUtil.deleteNode(watcher, zkNode);
+    } catch (KeeperException.NoNodeException e) {
+      LOG.warn("No acl notify node of namespace '" + namespace + "'");
+    } catch (KeeperException e) {
+      LOG.error("Failed deleting acl node of namespace '" + namespace + "'", e);
       watcher.abort("Failed deleting node " + zkNode, e);
     }
   }

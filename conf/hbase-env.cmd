@@ -24,10 +24,11 @@
 @rem Extra Java CLASSPATH elements.  Optional.
 @rem set HBASE_CLASSPATH=
 
-@rem The maximum amount of heap to use, in MB. Default is 1000.
+@rem The maximum amount of heap to use. Default is left to JVM default.
 @rem set HBASE_HEAPSIZE=1000
 
-@rem Uncomment below if you intend to use off heap cache.
+@rem Uncomment below if you intend to use off heap cache. For example, to allocate 8G of 
+@rem offheap, set the value to "8G".
 @rem set HBASE_OFFHEAPSIZE=1000
 
 @rem For example, to allocate 8G of offheap, to 8G:
@@ -40,6 +41,10 @@
 @rem JDK6 on Windows has a known bug for IPv6, use preferIPv4Stack unless JDK7.
 @rem @rem See TestIPv6NIOServerSocketChannel.
 set HBASE_OPTS="-XX:+UseConcMarkSweepGC" "-Djava.net.preferIPv4Stack=true"
+
+@rem Configure PermSize. Only needed in JDK7. You can safely remove it for JDK8+
+set HBASE_MASTER_OPTS=%HBASE_MASTER_OPTS% "-XX:PermSize=128m" "-XX:MaxPermSize=128m"
+set HBASE_REGIONSERVER_OPTS=%HBASE_REGIONSERVER_OPTS% "-XX:PermSize=128m" "-XX:MaxPermSize=128m"
 
 @rem Uncomment below to enable java garbage collection logging for the server-side processes
 @rem this enables basic gc logging for the server processes to the .out file

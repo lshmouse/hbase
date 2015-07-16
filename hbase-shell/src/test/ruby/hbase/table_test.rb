@@ -516,6 +516,36 @@ module Hbase
       assert_nil(res['2']['x:b'])
     end
 
+    define_test "scan should work with raw and version parameter" do
+      # Create test table if it does not exist
+      @test_name_raw = "hbase_shell_tests_raw_scan"
+      create_test_table(@test_name_raw)
+      @test_table = table(@test_name_raw)
+
+      # Instert test data
+      @test_table.put(1, "x:a", 1)
+      @test_table.put(2, "x:raw1", 11)
+      @test_table.put(2, "x:raw1", 11)
+      @test_table.put(2, "x:raw1", 11)
+      @test_table.put(2, "x:raw1", 11)
+
+      args = {}
+      numRows = 0
+      count = @test_table._scan_internal(args) do |row, cells| # Normal Scan
+        numRows += 1
+      end
+      assert_equal(numRows, 2, "Num rows scanned without RAW/VERSIONS are not 2") 
+
+      args = {VERSIONS=>10,RAW=>true} # Since 4 versions of row with rowkey 2 is been added, we can use any number >= 4 for VERSIONS to scan all 4 versions.
+      numRows = 0
+      count = @test_table._scan_internal(args) do |row, cells| # Raw Scan
+        numRows += 1
+      end
+      assert_equal(numRows, 5, "Num rows scanned without RAW/VERSIONS are not 5") # 5 since , 1 from row key '1' and other 4 from row key '4'
+    end
+
+
+
     define_test "scan should fail on invalid COLUMNS parameter types" do
       assert_raise(ArgumentError) do
         @test_table._scan_internal COLUMNS => {}
@@ -581,5 +611,22 @@ module Hbase
       end
     end
 
+    define_test "Split count for a table" do
+      @testTableName = "tableWithSplits"
+      create_test_table_with_splits(@testTableName, SPLITS => ['10', '20', '30', '40'])
+      @table = table(@testTableName)
+      splits = @table._get_splits_internal()
+      #Total splits is 5 but here count is 4 as we ignore implicit empty split.
+      assert_equal(4, splits.size)
+      assert_equal(["10", "20", "30", "40"], splits)
+      drop_test_table(@testTableName)
+    end
+
+    define_test "Split count for a empty table" do
+      splits = @test_table._get_splits_internal()
+      #Empty split should not be part of this array.
+      assert_equal(0, splits.size)
+      assert_equal([], splits)
+    end
   end
 end

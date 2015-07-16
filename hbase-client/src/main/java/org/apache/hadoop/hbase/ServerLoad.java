@@ -28,8 +28,11 @@ import java.util.TreeSet;
 
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.Coprocessor;
+import org.apache.hadoop.hbase.replication.ReplicationLoadSink;
+import org.apache.hadoop.hbase.replication.ReplicationLoadSource;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Strings;
 
@@ -45,14 +48,14 @@ public class ServerLoad {
   private int storefileSizeMB = 0;
   private int memstoreSizeMB = 0;
   private int storefileIndexSizeMB = 0;
-  private int readRequestsCount = 0;
-  private int writeRequestsCount = 0;
+  private long readRequestsCount = 0;
+  private long writeRequestsCount = 0;
   private int rootIndexSizeKB = 0;
   private int totalStaticIndexSizeKB = 0;
   private int totalStaticBloomSizeKB = 0;
   private long totalCompactingKVs = 0;
   private long currentCompactedKVs = 0;
-  
+
   public ServerLoad(ClusterStatusProtos.ServerLoad serverLoad) {
     this.serverLoad = serverLoad;
     for (ClusterStatusProtos.RegionLoad rl: serverLoad.getRegionLoadsList()) {
@@ -70,7 +73,7 @@ public class ServerLoad {
       totalCompactingKVs += rl.getTotalCompactingKVs();
       currentCompactedKVs += rl.getCurrentCompactedKVs();
     }
-    
+
   }
 
   // NOTE: Function name cannot start with "get" because then an OpenDataException is thrown because
@@ -83,7 +86,7 @@ public class ServerLoad {
   protected ClusterStatusProtos.ServerLoad serverLoad;
 
   /* @return number of requests  since last report. */
-  public int getNumberOfRequests() {
+  public long getNumberOfRequests() {
     return serverLoad.getNumberOfRequests();
   }
   public boolean hasNumberOfRequests() {
@@ -91,7 +94,7 @@ public class ServerLoad {
   }
 
   /* @return total Number of requests from the start of the region server. */
-  public int getTotalNumberOfRequests() {
+  public long getTotalNumberOfRequests() {
     return serverLoad.getTotalNumberOfRequests();
   }
   public boolean hasTotalNumberOfRequests() {
@@ -138,11 +141,11 @@ public class ServerLoad {
     return storefileIndexSizeMB;
   }
 
-  public int getReadRequestsCount() {
+  public long getReadRequestsCount() {
     return readRequestsCount;
   }
 
-  public int getWriteRequestsCount() {
+  public long getWriteRequestsCount() {
     return writeRequestsCount;
   }
 
@@ -175,6 +178,26 @@ public class ServerLoad {
 
   public int getInfoServerPort() {
     return serverLoad.getInfoServerPort();
+  }
+
+  /**
+   * Call directly from client such as hbase shell
+   * @return the list of ReplicationLoadSource
+   */
+  public List<ReplicationLoadSource> getReplicationLoadSourceList() {
+    return ProtobufUtil.toReplicationLoadSourceList(serverLoad.getReplLoadSourceList());
+  }
+
+  /**
+   * Call directly from client such as hbase shell
+   * @return ReplicationLoadSink
+   */
+  public ReplicationLoadSink getReplicationLoadSink() {
+    if (serverLoad.hasReplLoadSink()) {
+      return ProtobufUtil.toReplicationLoadSink(serverLoad.getReplLoadSink());
+    } else {
+      return null;
+    }
   }
 
   /**

@@ -106,9 +106,10 @@ implements Configurable {
       for (int i = 0; i < splits.length; i++) {
         LOG.info(Bytes.toStringBinary(splits[i]));
       }
+      this.lastReduces = reduces;
     }
     int pos = Bytes.binarySearch(this.splits, key.get(), key.getOffset(),
-      key.getLength(), Bytes.BYTES_RAWCOMPARATOR);
+      key.getLength());
     // Below code is from hfile index search.
     if (pos < 0) {
       pos++;
@@ -138,5 +139,7 @@ implements Configurable {
     }
     LOG.info("startkey=" + Bytes.toStringBinary(startkey) +
         ", endkey=" + Bytes.toStringBinary(endkey));
+    // Reset last reduces count on change of Start / End key
+    this.lastReduces = -1;
   }
 }

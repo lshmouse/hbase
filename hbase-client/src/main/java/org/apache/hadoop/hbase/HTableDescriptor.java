@@ -38,6 +38,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.client.Durability;
+import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.BytesBytesPair;
@@ -176,6 +177,24 @@ public class HTableDescriptor implements Comparable<HTableDescriptor> {
   private static final Bytes REGION_REPLICATION_KEY =
       new Bytes(Bytes.toBytes(REGION_REPLICATION));
 
+  /**
+   * <em>INTERNAL</em> flag to indicate whether or not the memstore should be replicated
+   * for read-replicas (CONSISTENCY =&gt; TIMELINE).
+   */
+  public static final String REGION_MEMSTORE_REPLICATION = "REGION_MEMSTORE_REPLICATION";
+  private static final Bytes REGION_MEMSTORE_REPLICATION_KEY =
+      new Bytes(Bytes.toBytes(REGION_MEMSTORE_REPLICATION));
+
+  /**
+   * <em>INTERNAL</em> Used by shell/rest interface to access this metadata
+   * attribute which denotes if the table should be treated by region normalizer.
+   *
+   * @see #isNormalizationEnabled()
+   */
+  public static final String NORMALIZATION_ENABLED = "NORMALIZATION_ENABLED";
+  private static final Bytes NORMALIZATION_ENABLED_KEY =
+    new Bytes(Bytes.toBytes(NORMALIZATION_ENABLED));
+
   /** Default durability for HTD is USE_DEFAULT, which defaults to HBase-global default value */
   private static final Durability DEFAULT_DURABLITY = Durability.USE_DEFAULT;
 
@@ -203,12 +222,19 @@ public class HTableDescriptor implements Comparable<HTableDescriptor> {
   public static final boolean DEFAULT_COMPACTION_ENABLED = true;
 
   /**
+   * Constant that denotes whether the table is normalized by default.
+   */
+  public static final boolean DEFAULT_NORMALIZATION_ENABLED = false;
+
+  /**
    * Constant that denotes the maximum default size of the memstore after which
    * the contents are flushed to the store files
    */
   public static final long DEFAULT_MEMSTORE_FLUSH_SIZE = 1024*1024*128L;
 
   public static final int DEFAULT_REGION_REPLICATION = 1;
+
+  public static final boolean DEFAULT_REGION_MEMSTORE_REPLICATION = true;
 
   private final static Map<String, String> DEFAULT_VALUES
     = new HashMap<String, String>();
@@ -283,10 +309,12 @@ public class HTableDescriptor implements Comparable<HTableDescriptor> {
   /**
    * Default constructor which constructs an empty object.
    * For deserializing an HTableDescriptor instance only.
-   * @deprecated Used by Writables and Writables are going away.
+   * @deprecated As of release 0.96 (<a href="https://issues.apache.org/jira/browse/HBASE-5453">HBASE-5453</a>).
+   *             This was made protected in 2.0.0 and will be removed in HBase 3.0.0.
+   *             Used by Writables and Writables are going away.
    */
   @Deprecated
-  public HTableDescriptor() {
+  protected HTableDescriptor() {
     super();
   }
 
@@ -601,6 +629,26 @@ public class HTableDescriptor implements Comparable<HTableDescriptor> {
   }
 
   /**
+   * Check if normalization enable flag of the table is true. If flag is
+   * false then no region normalizer won't attempt to normalize this table.
+   *
+   * @return true if region normalization is enabled for this table
+   */
+  public boolean isNormalizationEnabled() {
+    return isSomething(NORMALIZATION_ENABLED_KEY, DEFAULT_NORMALIZATION_ENABLED);
+  }
+
+  /**
+   * Setting the table normalization enable flag.
+   *
+   * @param isEnable True if enable normalization.
+   */
+  public HTableDescriptor setNormalizationEnabled(final boolean isEnable) {
+    setValue(NORMALIZATION_ENABLED_KEY, isEnable ? TRUE : FALSE);
+    return this;
+  }
+
+  /**
    * Sets the {@link Durability} setting for the table. This defaults to Durability.USE_DEFAULT.
    * @param durability enum value
    */
@@ -873,16 +921,16 @@ public class HTableDescriptor implements Comparable<HTableDescriptor> {
     // step 1: set partitioning and pruning
     Set<Bytes> reservedKeys = new TreeSet<Bytes>();
     Set<Bytes> userKeys = new TreeSet<Bytes>();
-    for (Bytes k : values.keySet()) {
-      if (k == null || k.get() == null) continue;
-      String key = Bytes.toString(k.get());
+    for (Map.Entry<Bytes, Bytes> entry : values.entrySet()) {
+      if (entry.getKey() == null || entry.getKey().get() == null) continue;
+      String key = Bytes.toString(entry.getKey().get());
       // in this section, print out reserved keywords + coprocessor info
-      if (!RESERVED_KEYWORDS.contains(k) && !key.startsWith("coprocessor$")) {
-        userKeys.add(k);
+      if (!RESERVED_KEYWORDS.contains(entry.getKey()) && !key.startsWith("coprocessor$")) {
+        userKeys.add(entry.getKey());
         continue;
       }
       // only print out IS_ROOT/IS_META if true
-      String value = Bytes.toString(values.get(k).get());
+      String value = Bytes.toString(entry.getValue().get());
       if (key.equalsIgnoreCase(IS_ROOT) || key.equalsIgnoreCase(IS_META)) {
         if (Boolean.valueOf(value) == false) continue;
       }
@@ -890,7 +938,7 @@ public class HTableDescriptor implements Comparable<HTableDescriptor> {
       if (printDefaults
           || !DEFAULT_VALUES.containsKey(key)
           || !DEFAULT_VALUES.get(key).equalsIgnoreCase(value)) {
-        reservedKeys.add(k);
+        reservedKeys.add(entry.getKey());
       }
     }
 
@@ -1070,6 +1118,31 @@ public class HTableDescriptor implements Comparable<HTableDescriptor> {
   public HTableDescriptor setRegionReplication(int regionReplication) {
     setValue(REGION_REPLICATION_KEY,
         new Bytes(Bytes.toBytes(Integer.toString(regionReplication))));
+    return this;
+  }
+
+  /**
+   * @return true if the read-replicas memstore replication is enabled.
+   */
+  public boolean hasRegionMemstoreReplication() {
+    return isSomething(REGION_MEMSTORE_REPLICATION_KEY, DEFAULT_REGION_MEMSTORE_REPLICATION);
+  }
+
+  /**
+   * Enable or Disable the memstore replication from the primary region to the replicas.
+   * The replication will be used only for meta operations (e.g. flush, compaction, ...)
+   *
+   * @param memstoreReplication true if the new data written to the primary region
+   *                                 should be replicated.
+   *                            false if the secondaries can tollerate to have new
+   *                                  data only when the primary flushes the memstore.
+   */
+  public HTableDescriptor setRegionMemstoreReplication(boolean memstoreReplication) {
+    setValue(REGION_MEMSTORE_REPLICATION_KEY, memstoreReplication ? TRUE : FALSE);
+    // If the memstore replication is setup, we do not have to wait for observing a flush event
+    // from primary before starting to serve reads, because gaps from replication is not applicable
+    setConfiguration(RegionReplicaUtil.REGION_REPLICA_WAIT_FOR_PRIMARY_FLUSH_CONF_KEY,
+      Boolean.toString(memstoreReplication));
     return this;
   }
 
@@ -1332,6 +1405,17 @@ public class HTableDescriptor implements Comparable<HTableDescriptor> {
               .setBloomFilterType(BloomType.NONE)
               // Enable cache of data blocks in L1 if more than one caching tier deployed:
               // e.g. if using CombinedBlockCache (BucketCache).
+              .setCacheDataInL1(true),
+          new HColumnDescriptor(HConstants.TABLE_FAMILY)
+              // Ten is arbitrary number.  Keep versions to help debugging.
+              .setMaxVersions(10)
+              .setInMemory(true)
+              .setBlocksize(8 * 1024)
+              .setScope(HConstants.REPLICATION_SCOPE_LOCAL)
+                  // Disable blooms for meta.  Needs work.  Seems to mess w/ getClosestOrBefore.
+              .setBloomFilterType(BloomType.NONE)
+                  // Enable cache of data blocks in L1 if more than one caching tier deployed:
+                  // e.g. if using CombinedBlockCache (BucketCache).
               .setCacheDataInL1(true)
       });
 

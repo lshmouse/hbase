@@ -18,20 +18,20 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
-import java.util.Date;
 import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.Chore;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.Stoppable;
-import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
+import org.apache.hadoop.hbase.util.NonceKey;
 
 import com.google.common.annotations.VisibleForTesting;
 
@@ -100,38 +100,6 @@ public class ServerNonceManager {
 
     private long getActivityTime() {
       return this.data >>> 3;
-    }
-  }
-
-  /**
-   * This implementation is not smart and just treats nonce group and nonce as random bits.
-   */
-  // TODO: we could use pure byte arrays, but then we wouldn't be able to use hash map.
-  private static class NonceKey {
-    private long group;
-    private long nonce;
-
-    public NonceKey(long group, long nonce) {
-      assert nonce != HConstants.NO_NONCE;
-      this.group = group;
-      this.nonce = nonce;
-    }
-
-    @Override
-    public boolean equals(Object obj) {
-      if (obj == null || !(obj instanceof NonceKey)) return false;
-      NonceKey nk = ((NonceKey)obj);
-      return this.nonce == nk.nonce && this.group == nk.group;
-    }
-
-    @Override
-    public int hashCode() {
-      return (int)((group >> 32) ^ group ^ (nonce >> 32) ^ nonce);
-    }
-
-    @Override
-    public String toString() {
-      return "[" + group + ":" + nonce + "]";
     }
   }
 
@@ -247,13 +215,13 @@ public class ServerNonceManager {
   }
 
   /**
-   * Creates a chore that is used to clean up old nonces.
+   * Creates a scheduled chore that is used to clean up old nonces.
    * @param stoppable Stoppable for the chore.
-   * @return Chore; the chore is not started.
+   * @return ScheduledChore; the scheduled chore is not started.
    */
-  public Chore createCleanupChore(Stoppable stoppable) {
+  public ScheduledChore createCleanupScheduledChore(Stoppable stoppable) {
     // By default, it will run every 6 minutes (30 / 5).
-    return new Chore("nonceCleaner", deleteNonceGracePeriod / 5, stoppable) {
+    return new ScheduledChore("nonceCleaner", stoppable, deleteNonceGracePeriod / 5) {
       @Override
       protected void chore() {
         cleanUpOldNonces();

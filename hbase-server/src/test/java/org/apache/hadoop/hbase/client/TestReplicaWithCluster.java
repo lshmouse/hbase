@@ -42,6 +42,7 @@ import org.apache.hadoop.hbase.regionserver.TestHRegionServerBulkLoad;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.FSTableDescriptors;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.zookeeper.MiniZooKeeperCluster;
 import org.junit.AfterClass;
@@ -130,7 +131,8 @@ public class TestReplicaWithCluster {
 
   @AfterClass
   public static void afterClass() throws Exception {
-    HTU2.shutdownMiniCluster();
+    if (HTU2 != null)
+      HTU2.shutdownMiniCluster();
     HTU.shutdownMiniCluster();
   }
 
@@ -140,10 +142,10 @@ public class TestReplicaWithCluster {
     HTableDescriptor hdt = HTU.createTableDescriptor("testCreateDeleteTable");
     hdt.setRegionReplication(NB_SERVERS);
     hdt.addCoprocessor(SlowMeCopro.class.getName());
-    Table table = HTU.createTable(hdt, new byte[][]{f}, HTU.getConfiguration());
+    Table table = HTU.createTable(hdt, new byte[][]{f}, null);
 
     Put p = new Put(row);
-    p.add(f, row, row);
+    p.addColumn(f, row, row);
     table.put(p);
 
     Get g = new Get(row);
@@ -167,16 +169,16 @@ public class TestReplicaWithCluster {
     HTU.deleteTable(hdt.getTableName());
   }
 
-  @Test (timeout=30000)
+  @Test (timeout=120000)
   public void testChangeTable() throws Exception {
     HTableDescriptor hdt = HTU.createTableDescriptor("testChangeTable");
     hdt.setRegionReplication(NB_SERVERS);
     hdt.addCoprocessor(SlowMeCopro.class.getName());
-    Table table = HTU.createTable(hdt, new byte[][]{f}, HTU.getConfiguration());
+    Table table = HTU.createTable(hdt, new byte[][]{f}, null);
 
     // basic test: it should work.
     Put p = new Put(row);
-    p.add(f, row, row);
+    p.addColumn(f, row, row);
     table.put(p);
 
     Get g = new Get(row);
@@ -213,7 +215,6 @@ public class TestReplicaWithCluster {
       SlowMeCopro.sleepTime.set(0);
     }
 
-    HTU.getHBaseCluster().stopMaster(0);
     Admin admin = HTU.getHBaseAdmin();
     nHdt =admin.getTableDescriptor(hdt.getTableName());
     Assert.assertEquals("fams=" + Arrays.toString(nHdt.getColumnFamilies()),
@@ -221,7 +222,6 @@ public class TestReplicaWithCluster {
 
     admin.disableTable(hdt.getTableName());
     admin.deleteTable(hdt.getTableName());
-    HTU.getHBaseCluster().startMaster();
     admin.close();
   }
 
@@ -314,7 +314,7 @@ public class TestReplicaWithCluster {
     HTableDescriptor hdt = HTU.createTableDescriptor("testBulkLoad");
     hdt.setRegionReplication(NB_SERVERS);
     hdt.addCoprocessor(SlowMeCopro.class.getName());
-    Table table = HTU.createTable(hdt, new byte[][]{f}, HTU.getConfiguration());
+    Table table = HTU.createTable(hdt, new byte[][]{f}, null);
 
     // create hfiles to load.
     LOG.debug("Creating test data");

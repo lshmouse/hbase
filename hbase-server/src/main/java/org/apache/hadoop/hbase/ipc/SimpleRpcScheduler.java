@@ -37,7 +37,7 @@ import org.apache.hadoop.hbase.util.BoundedPriorityBlockingQueue;
 @InterfaceAudience.LimitedPrivate({HBaseInterfaceAudience.COPROC, HBaseInterfaceAudience.PHOENIX})
 @InterfaceStability.Evolving
 public class SimpleRpcScheduler extends RpcScheduler {
-  public static final Log LOG = LogFactory.getLog(SimpleRpcScheduler.class);
+  private static final Log LOG = LogFactory.getLog(SimpleRpcScheduler.class);
 
   public static final String CALL_QUEUE_READ_SHARE_CONF_KEY =
       "hbase.ipc.server.callqueue.read.ratio";
@@ -192,7 +192,7 @@ public class SimpleRpcScheduler extends RpcScheduler {
   @Override
   public void dispatch(CallRunner callTask) throws InterruptedException {
     RpcServer.Call call = callTask.getCall();
-    int level = priority.getPriority(call.getHeader(), call.param);
+    int level = priority.getPriority(call.getHeader(), call.param, call.getRequestUser());
     if (priorityExecutor != null && level > highPriorityLevel) {
       priorityExecutor.dispatch(callTask);
     } else if (replicationExecutor != null && level == HConstants.REPLICATION_QOS) {

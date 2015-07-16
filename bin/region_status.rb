@@ -46,6 +46,7 @@ end
 require 'java'
 
 import org.apache.hadoop.hbase.HBaseConfiguration
+import org.apache.hadoop.hbase.TableName
 import org.apache.hadoop.hbase.HConstants
 import org.apache.hadoop.hbase.MasterNotRunningException
 import org.apache.hadoop.hbase.client.HBaseAdmin
@@ -54,9 +55,9 @@ import org.apache.hadoop.hbase.client.Scan
 import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter
 import org.apache.hadoop.hbase.util.Bytes
 import org.apache.hadoop.hbase.HRegionInfo
-import org.apache.hadoop.hbase.client.MetaScanner
+import org.apache.hadoop.hbase.MetaTableAccessor
 import org.apache.hadoop.hbase.HTableDescriptor
-import org.apache.hadoop.hbase.client.HConnectionManager
+import org.apache.hadoop.hbase.client.ConnectionFactory
 
 # disable debug logging on this script for clarity
 log_level = org.apache.log4j.Level::ERROR
@@ -65,6 +66,7 @@ org.apache.log4j.Logger.getLogger("org.apache.hadoop.hbase").setLevel(log_level)
 
 config = HBaseConfiguration.create
 config.set 'fs.defaultFS', config.get(HConstants::HBASE_DIR)
+connection = ConnectionFactory.createConnection(config)
 
 # wait until the master is running
 admin = nil
@@ -100,7 +102,7 @@ table = nil
 iter = nil
 while true
   begin
-    table = HTable.new config, 'hbase:meta'.to_java_bytes
+    table = connection.getTable(TableName.valueOf('hbase:meta'))
     scanner = table.getScanner(scan)
     iter = scanner.iterator
     break
@@ -138,8 +140,8 @@ while true
   if $tablename.nil?
     server_count = admin.getClusterStatus().getRegionsCount()
   else
-    connection = HConnectionManager::getConnection(config);
-    server_count = MetaScanner::allTableRegions(config, connection, $TableName ,false).size()
+    connection = ConnectionFactory::createConnection(config);
+    server_count = MetaTableAccessor::allTableRegions(connection, $TableName).size()
   end
   print "Region Status: #{server_count} / #{meta_count}\n"
   if SHOULD_WAIT and server_count < meta_count

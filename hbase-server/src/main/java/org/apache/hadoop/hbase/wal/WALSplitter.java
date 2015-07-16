@@ -49,13 +49,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
-import com.google.protobuf.ServiceException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileStatus;
@@ -70,22 +65,21 @@ import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
-import org.apache.hadoop.hbase.Tag;
-import org.apache.hadoop.hbase.TagRewriteCell;
-import org.apache.hadoop.hbase.TagType;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.ConnectionUtils;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.HConnection;
-import org.apache.hadoop.hbase.client.HConnectionManager;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.TableState;
 import org.apache.hadoop.hbase.coordination.BaseCoordinatedStateManager;
 import org.apache.hadoop.hbase.coordination.ZKSplitLogManagerCoordination;
-import org.apache.hadoop.hbase.client.TableState;
 import org.apache.hadoop.hbase.exceptions.RegionOpeningException;
 import org.apache.hadoop.hbase.io.HeapSize;
 import org.apache.hadoop.hbase.master.SplitLogManager;
@@ -98,16 +92,19 @@ import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.GetRegionInfoReque
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.GetRegionInfoResponse;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.WALEntry;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.MutationProto.MutationType;
+import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos.RegionStoreSequenceIds;
+import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos.StoreSequenceId;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.protobuf.generated.WALProtos.CompactionDescriptor;
-import org.apache.hadoop.hbase.protobuf.generated.ZooKeeperProtos.RegionStoreSequenceIds;
 import org.apache.hadoop.hbase.protobuf.generated.ZooKeeperProtos.SplitLogTask.RecoveryMode;
-import org.apache.hadoop.hbase.protobuf.generated.ZooKeeperProtos.StoreSequenceId;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.LastSequenceId;
-import org.apache.hadoop.hbase.wal.WAL.Entry;
-import org.apache.hadoop.hbase.wal.WAL.Reader;
-import org.apache.hadoop.hbase.wal.WALProvider.Writer;
+// imports for things that haven't moved from regionserver.wal yet.
+import org.apache.hadoop.hbase.regionserver.wal.FSHLog;
+import org.apache.hadoop.hbase.regionserver.wal.HLogKey;
+import org.apache.hadoop.hbase.regionserver.wal.WALCellCodec;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
+import org.apache.hadoop.hbase.regionserver.wal.WALEditsReplaySink;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CancelableProgressable;
 import org.apache.hadoop.hbase.util.ClassSize;
@@ -115,17 +112,18 @@ import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.Threads;
+import org.apache.hadoop.hbase.wal.WAL.Entry;
+import org.apache.hadoop.hbase.wal.WAL.Reader;
+import org.apache.hadoop.hbase.wal.WALProvider.Writer;
 import org.apache.hadoop.hbase.zookeeper.ZKSplitLog;
 import org.apache.hadoop.io.MultipleIOException;
 import org.apache.hadoop.ipc.RemoteException;
 
-// imports for things that haven't moved from regionserver.wal yet.
-import org.apache.hadoop.hbase.regionserver.wal.FSHLog;
-import org.apache.hadoop.hbase.regionserver.wal.HLogKey;
-import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
-import org.apache.hadoop.hbase.regionserver.wal.WALEditsReplaySink;
-import org.apache.hadoop.hbase.regionserver.wal.WALCellCodec;
-import org.apache.hadoop.hbase.regionserver.wal.WALUtil;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
+import com.google.protobuf.ServiceException;
+import com.google.protobuf.TextFormat;
 
 /**
  * This class is responsible for splitting up a bunch of regionserver commit log
@@ -134,7 +132,7 @@ import org.apache.hadoop.hbase.regionserver.wal.WALUtil;
  */
 @InterfaceAudience.Private
 public class WALSplitter {
-  static final Log LOG = LogFactory.getLog(WALSplitter.class);
+  private static final Log LOG = LogFactory.getLog(WALSplitter.class);
 
   /** By default we retry errors in splitting, rather than skipping. */
   public static final boolean SPLIT_SKIP_ERRORS_DEFAULT = false;
@@ -150,8 +148,8 @@ public class WALSplitter {
   OutputSink outputSink;
   EntryBuffers entryBuffers;
 
-  private Set<TableName> disablingOrDisabledTables =
-      new HashSet<TableName>();
+  private Map<TableName, TableState> tableStatesCache =
+      new ConcurrentHashMap<>();
   private BaseCoordinatedStateManager csm;
   private final WALFactory walFactory;
 
@@ -269,8 +267,7 @@ public class WALSplitter {
    * log splitting implementation, splits one log file.
    * @param logfile should be an actual log file.
    */
-  boolean splitLogFile(FileStatus logfile,
-      CancelableProgressable reporter) throws IOException {
+  boolean splitLogFile(FileStatus logfile, CancelableProgressable reporter) throws IOException {
     Preconditions.checkState(status == null);
     Preconditions.checkArgument(logfile.isFile(),
         "passed in file status is for something other than a regular file.");
@@ -308,16 +305,6 @@ public class WALSplitter {
         LOG.warn("Nothing to split in log file " + logPath);
         return true;
       }
-      if(csm != null) {
-        HConnection scc = csm.getServer().getConnection();
-        TableName[] tables = scc.listTableNames();
-        for (TableName table : tables) {
-          if (scc.getTableState(table)
-              .inStates(TableState.State.DISABLED, TableState.State.DISABLING)) {
-            disablingOrDisabledTables.add(table);
-          }
-        }
-      }
       int numOpenedFilesBeforeReporting = conf.getInt("hbase.splitlog.report.openedfiles", 3);
       int numOpenedFilesLastCheck = 0;
       outputSink.setReporter(reporter);
@@ -329,23 +316,38 @@ public class WALSplitter {
       failedServerName = (serverName == null) ? "" : serverName.getServerName();
       while ((entry = getNextLogLine(in, logPath, skipErrors)) != null) {
         byte[] region = entry.getKey().getEncodedRegionName();
-        String key = Bytes.toString(region);
-        lastFlushedSequenceId = lastFlushedSequenceIds.get(key);
+        String encodedRegionNameAsStr = Bytes.toString(region);
+        lastFlushedSequenceId = lastFlushedSequenceIds.get(encodedRegionNameAsStr);
         if (lastFlushedSequenceId == null) {
           if (this.distributedLogReplay) {
             RegionStoreSequenceIds ids =
                 csm.getSplitLogWorkerCoordination().getRegionFlushedSequenceId(failedServerName,
-                  key);
+                  encodedRegionNameAsStr);
             if (ids != null) {
               lastFlushedSequenceId = ids.getLastFlushedSequenceId();
+              if (LOG.isDebugEnabled()) {
+                LOG.debug("DLR Last flushed sequenceid for " + encodedRegionNameAsStr + ": " +
+                  TextFormat.shortDebugString(ids));
+              }
             }
           } else if (sequenceIdChecker != null) {
-            lastFlushedSequenceId = sequenceIdChecker.getLastSequenceId(region);
+            RegionStoreSequenceIds ids = sequenceIdChecker.getLastSequenceId(region);
+            Map<byte[], Long> maxSeqIdInStores = new TreeMap<byte[], Long>(Bytes.BYTES_COMPARATOR);
+            for (StoreSequenceId storeSeqId : ids.getStoreSequenceIdList()) {
+              maxSeqIdInStores.put(storeSeqId.getFamilyName().toByteArray(),
+                storeSeqId.getSequenceId());
+            }
+            regionMaxSeqIdInStores.put(encodedRegionNameAsStr, maxSeqIdInStores);
+            lastFlushedSequenceId = ids.getLastFlushedSequenceId();
+            if (LOG.isDebugEnabled()) {
+              LOG.debug("DLS Last flushed sequenceid for " + encodedRegionNameAsStr + ": " +
+                  TextFormat.shortDebugString(ids));
+            }
           }
           if (lastFlushedSequenceId == null) {
             lastFlushedSequenceId = -1L;
           }
-          lastFlushedSequenceIds.put(key, lastFlushedSequenceId);
+          lastFlushedSequenceIds.put(encodedRegionNameAsStr, lastFlushedSequenceId);
         }
         if (lastFlushedSequenceId >= entry.getKey().getLogSeqNum()) {
           editsSkipped++;
@@ -399,8 +401,9 @@ public class WALSplitter {
       } finally {
         String msg =
             "Processed " + editsCount + " edits across " + outputSink.getNumberOfRecoveredRegions()
-                + " regions; log file=" + logPath + " is corrupted = " + isCorrupted
-                + " progress failed = " + progress_failed;
+                + " regions; edits skipped=" + editsSkipped + "; log file=" + logPath +
+                ", length=" + logfile.getLen() + // See if length got updated post lease recovery
+                ", corrupted=" + isCorrupted + ", progress failed=" + progress_failed;
         LOG.info(msg);
         status.markComplete(msg);
       }
@@ -714,8 +717,8 @@ public class WALSplitter {
           throw new IOException("Failed to create SeqId file:" + newSeqIdFile);
         }
         if (LOG.isDebugEnabled()) {
-          LOG.debug("Written region seqId to file:" + newSeqIdFile + " ,newSeqId=" + newSeqId
-              + " ,maxSeqId=" + maxSeqId);
+          LOG.debug("Wrote region seqId=" + newSeqIdFile + " to file, newSeqId=" + newSeqId
+              + ", maxSeqId=" + maxSeqId);
         }
       } catch (FileAlreadyExistsException ignored) {
         // latest hdfs throws this exception. it's all right if newSeqIdFile already exists
@@ -1069,7 +1072,7 @@ public class WALSplitter {
     }
 
     private void doRun() throws IOException {
-      LOG.debug("Writer thread " + this + ": starting");
+      if (LOG.isTraceEnabled()) LOG.trace("Writer thread starting");
       while (true) {
         RegionEntryBuffer buffer = entryBuffers.getChunkToWrite();
         if (buffer == null) {
@@ -1199,12 +1202,18 @@ public class WALSplitter {
      * @return true when there is no error
      * @throws IOException
      */
-    protected boolean finishWriting() throws IOException {
+    protected boolean finishWriting(boolean interrupt) throws IOException {
       LOG.debug("Waiting for split writer threads to finish");
       boolean progress_failed = false;
       for (WriterThread t : writerThreads) {
         t.finish();
       }
+      if (interrupt) {
+        for (WriterThread t : writerThreads) {
+          t.interrupt(); // interrupt the writer threads. We are stopping now.
+        }
+      }
+
       for (WriterThread t : writerThreads) {
         if (!progress_failed && reporter != null && !reporter.progress()) {
           progress_failed = true;
@@ -1218,7 +1227,8 @@ public class WALSplitter {
         }
       }
       controller.checkForErrors();
-      LOG.info("Split writers finished");
+      LOG.info((this.writerThreads == null? 0: this.writerThreads.size()) +
+        " split writers finished; closing...");
       return (!progress_failed);
     }
 
@@ -1273,7 +1283,7 @@ public class WALSplitter {
       boolean isSuccessful = false;
       List<Path> result = null;
       try {
-        isSuccessful = finishWriting();
+        isSuccessful = finishWriting(false);
       } finally {
         result = close();
         List<IOException> thrown = closeLogWriters(null);
@@ -1309,12 +1319,14 @@ public class WALSplitter {
       CompletionService<Void> completionService =
         new ExecutorCompletionService<Void>(closeThreadPool);
       for (final Map.Entry<byte[], SinkWriter> writersEntry : writers.entrySet()) {
-        LOG.debug("Submitting close of " + ((WriterAndPath)writersEntry.getValue()).p);
+        if (LOG.isTraceEnabled()) {
+          LOG.trace("Submitting close of " + ((WriterAndPath)writersEntry.getValue()).p);
+        }
         completionService.submit(new Callable<Void>() {
           @Override
           public Void call() throws Exception {
             WriterAndPath wap = (WriterAndPath) writersEntry.getValue();
-            LOG.debug("Closing " + wap.p);
+            if (LOG.isTraceEnabled()) LOG.trace("Closing " + wap.p);
             try {
               wap.w.close();
             } catch (IOException ioe) {
@@ -1322,9 +1334,11 @@ public class WALSplitter {
               thrown.add(ioe);
               return null;
             }
-            LOG.info("Closed wap " + wap.p + " (wrote " + wap.editsWritten + " edits in "
-                + (wap.nanosSpent / 1000 / 1000) + "ms)");
-
+            if (LOG.isDebugEnabled()) {
+              LOG.debug("Closed wap " + wap.p + " (wrote " + wap.editsWritten
+                + " edits, skipped " + wap.editsSkipped + " edits in "
+                + (wap.nanosSpent / 1000 / 1000) + "ms");
+            }
             if (wap.editsWritten == 0) {
               // just remove the empty recovered.edits file
               if (fs.exists(wap.p) && !fs.delete(wap.p, false)) {
@@ -1482,8 +1496,31 @@ public class WALSplitter {
         }
       }
       Writer w = createWriter(regionedits);
-      LOG.info("Creating writer path=" + regionedits + " region=" + Bytes.toStringBinary(region));
-      return (new WriterAndPath(regionedits, w));
+      LOG.debug("Creating writer path=" + regionedits);
+      return new WriterAndPath(regionedits, w);
+    }
+
+    private void filterCellByStore(Entry logEntry) {
+      Map<byte[], Long> maxSeqIdInStores =
+          regionMaxSeqIdInStores.get(Bytes.toString(logEntry.getKey().getEncodedRegionName()));
+      if (maxSeqIdInStores == null || maxSeqIdInStores.isEmpty()) {
+        return;
+      }
+      List<Cell> skippedCells = new ArrayList<Cell>();
+      for (Cell cell : logEntry.getEdit().getCells()) {
+        if (!CellUtil.matchingFamily(cell, WALEdit.METAFAMILY)) {
+          byte[] family = CellUtil.cloneFamily(cell);
+          Long maxSeqId = maxSeqIdInStores.get(family);
+          // Do not skip cell even if maxSeqId is null. Maybe we are in a rolling upgrade,
+          // or the master was crashed before and we can not get the information.
+          if (maxSeqId != null && maxSeqId.longValue() >= logEntry.getKey().getLogSeqNum()) {
+            skippedCells.add(cell);
+          }
+        }
+      }
+      if (!skippedCells.isEmpty()) {
+        logEntry.getEdit().getCells().removeAll(skippedCells);
+      }
     }
 
     @Override
@@ -1510,9 +1547,14 @@ public class WALSplitter {
               return;
             }
           }
-          wap.w.append(logEntry);
-          this.updateRegionMaximumEditLogSeqNum(logEntry);
-          editsCount++;
+          filterCellByStore(logEntry);
+          if (!logEntry.getEdit().isEmpty()) {
+            wap.w.append(logEntry);
+            this.updateRegionMaximumEditLogSeqNum(logEntry);
+            editsCount++;
+          } else {
+            wap.incrementSkippedEdits(1);
+          }
         }
         // Pass along summary statistics
         wap.incrementEdits(editsCount);
@@ -1551,11 +1593,17 @@ public class WALSplitter {
   public abstract static class SinkWriter {
     /* Count of edits written to this path */
     long editsWritten = 0;
+    /* Count of edits skipped to this path */
+    long editsSkipped = 0;
     /* Number of nanos spent writing to this log */
     long nanosSpent = 0;
 
     void incrementEdits(int edits) {
       editsWritten += edits;
+    }
+
+    void incrementSkippedEdits(int skipped) {
+      editsSkipped += skipped;
     }
 
     void incrementNanoTime(long nanos) {
@@ -1629,7 +1677,7 @@ public class WALSplitter {
       }
 
       // check if current region in a disabling or disabled table
-      if (disablingOrDisabledTables.contains(buffer.tableName)) {
+      if (isTableDisabledOrDisabling(buffer.tableName)) {
         // need fall back to old way
         logRecoveredEditsOutputSink.append(buffer);
         hasEditsInDisablingOrDisabledTables = true;
@@ -1646,12 +1694,13 @@ public class WALSplitter {
       int maxSize = 0;
       List<Pair<HRegionLocation, Entry>> maxQueue = null;
       synchronized (this.serverToBufferQueueMap) {
-        for (String key : this.serverToBufferQueueMap.keySet()) {
-          List<Pair<HRegionLocation, Entry>> curQueue = this.serverToBufferQueueMap.get(key);
+        for (Map.Entry<String, List<Pair<HRegionLocation, Entry>>> entry :
+            this.serverToBufferQueueMap.entrySet()) {
+          List<Pair<HRegionLocation, Entry>> curQueue = entry.getValue();
           if (curQueue.size() > maxSize) {
             maxSize = curQueue.size();
             maxQueue = curQueue;
-            maxLocKey = key;
+            maxLocKey = entry.getKey();
           }
         }
         if (maxSize < minBatchSize
@@ -1702,8 +1751,8 @@ public class WALSplitter {
         HConnection hconn = this.getConnectionByTableName(table);
 
         for (Cell cell : cells) {
-          byte[] row = cell.getRow();
-          byte[] family = cell.getFamily();
+          byte[] row = CellUtil.cloneRow(cell);
+          byte[] family = CellUtil.cloneFamily(cell);
           boolean isCompactionEntry = false;
           if (CellUtil.matchingFamily(cell, WALEdit.METAFAMILY)) {
             CompactionDescriptor compaction = WALEdit.getCompaction(cell);
@@ -1942,11 +1991,12 @@ public class WALSplitter {
       int curSize = 0;
       List<Pair<HRegionLocation, Entry>> curQueue = null;
       synchronized (this.serverToBufferQueueMap) {
-        for (String locationKey : this.serverToBufferQueueMap.keySet()) {
-          curQueue = this.serverToBufferQueueMap.get(locationKey);
+        for (Map.Entry<String, List<Pair<HRegionLocation, Entry>>> entry :
+                this.serverToBufferQueueMap.entrySet()) {
+          curQueue = entry.getValue();
           if (!curQueue.isEmpty()) {
             curSize = curQueue.size();
-            curLoc = locationKey;
+            curLoc = entry.getKey();
             break;
           }
         }
@@ -1973,7 +2023,7 @@ public class WALSplitter {
     @Override
     public List<Path> finishWritingAndClose() throws IOException {
       try {
-        if (!finishWriting()) {
+        if (!finishWriting(false)) {
           return null;
         }
         if (hasEditsInDisablingOrDisabledTables) {
@@ -2016,12 +2066,12 @@ public class WALSplitter {
           }
         } finally {
           synchronized (writers) {
-            for (String locationKey : writers.keySet()) {
-              RegionServerWriter tmpW = writers.get(locationKey);
+            for (Map.Entry<String, RegionServerWriter> entry : writers.entrySet()) {
+              RegionServerWriter tmpW = entry.getValue();
               try {
                 tmpW.close();
               } catch (IOException ioe) {
-                LOG.error("Couldn't close writer for region server:" + locationKey, ioe);
+                LOG.error("Couldn't close writer for region server:" + entry.getKey(), ioe);
                 result.add(ioe);
               }
             }
@@ -2029,8 +2079,9 @@ public class WALSplitter {
 
           // close connections
           synchronized (this.tableNameToHConnectionMap) {
-            for (TableName tableName : this.tableNameToHConnectionMap.keySet()) {
-              HConnection hconn = this.tableNameToHConnectionMap.get(tableName);
+            for (Map.Entry<TableName,HConnection> entry :
+                    this.tableNameToHConnectionMap.entrySet()) {
+              HConnection hconn = entry.getValue();
               try {
                 hconn.clearRegionCache();
                 hconn.close();
@@ -2059,6 +2110,26 @@ public class WALSplitter {
     @Override
     public int getNumberOfRecoveredRegions() {
       return this.recoveredRegions.size();
+    }
+
+    private boolean isTableDisabledOrDisabling(TableName tableName) {
+      if (csm == null)
+        return false; // we can't get state without CoordinatedStateManager
+      if (tableName.isSystemTable())
+        return false; // assume that system tables never can be disabled
+      TableState tableState = tableStatesCache.get(tableName);
+      if (tableState == null) {
+        try {
+          tableState =
+              MetaTableAccessor.getTableState(csm.getServer().getConnection(), tableName);
+          if (tableState != null)
+            tableStatesCache.put(tableName, tableState);
+        } catch (IOException e) {
+          LOG.warn("State is not accessible for table " + tableName, e);
+        }
+      }
+      return tableState != null && tableState
+          .inStates(TableState.State.DISABLED, TableState.State.DISABLING);
     }
 
     /**
@@ -2094,7 +2165,7 @@ public class WALSplitter {
         synchronized (this.tableNameToHConnectionMap) {
           hconn = this.tableNameToHConnectionMap.get(tableName);
           if (hconn == null) {
-            hconn = HConnectionManager.getConnection(conf);
+            hconn = (HConnection) ConnectionFactory.createConnection(conf);
             this.tableNameToHConnectionMap.put(tableName, hconn);
           }
         }
@@ -2157,13 +2228,13 @@ public class WALSplitter {
   }
 
   /**
-   * This function is used to construct mutations from a WALEntry. It also reconstructs WALKey &
-   * WALEdit from the passed in WALEntry
+   * This function is used to construct mutations from a WALEntry. It also
+   * reconstructs WALKey &amp; WALEdit from the passed in WALEntry
    * @param entry
    * @param cells
    * @param logEntry pair of WALKey and WALEdit instance stores WALKey and WALEdit instances
    *          extracted from the passed in WALEntry.
-   * @return list of Pair<MutationType, Mutation> to be replayed
+   * @return list of Pair&lt;MutationType, Mutation&gt; to be replayed
    * @throws IOException
    */
   public static List<MutationReplay> getMutationsFromWALEntry(WALEntry entry, CellScanner cells,

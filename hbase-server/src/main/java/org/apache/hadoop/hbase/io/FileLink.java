@@ -19,8 +19,8 @@
 package org.apache.hadoop.hbase.io;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.FileNotFoundException;
@@ -91,7 +91,7 @@ import org.apache.hadoop.hbase.util.FSUtils;
 public class FileLink {
   private static final Log LOG = LogFactory.getLog(FileLink.class);
 
-  /** Define the Back-reference directory name prefix: .links-<hfile>/ */
+  /** Define the Back-reference directory name prefix: .links-&lt;hfile&gt;/ */
   public static final String BACK_REFERENCES_DIRECTORY_PREFIX = ".links-";
 
   /**
@@ -336,6 +336,7 @@ public class FileLink {
     return locations;
   }
 
+  @Override
   public String toString() {
     StringBuilder str = new StringBuilder(getClass().getName());
     str.append(" locations=[");
@@ -471,6 +472,26 @@ public class FileLink {
   public static boolean isBackReferencesDir(final Path dirPath) {
     if (dirPath == null) return false;
     return dirPath.getName().startsWith(BACK_REFERENCES_DIRECTORY_PREFIX);
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (obj == null) {
+      return false;
+    }
+    // Assumes that the ordering of locations between objects are the same. This is true for the
+    // current subclasses already (HFileLink, WALLink). Otherwise, we may have to sort the locations
+    // or keep them presorted
+    if (this.getClass().equals(obj.getClass())) {
+      return Arrays.equals(this.locations, ((FileLink) obj).locations);
+    }
+
+    return false;
+  }
+
+  @Override
+  public int hashCode() {
+    return Arrays.hashCode(locations);
   }
 }
 

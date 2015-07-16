@@ -31,20 +31,22 @@
 # Extra Java CLASSPATH elements.  Optional.
 # export HBASE_CLASSPATH=
 
-# The maximum amount of heap to use, in MB. Default is 1000.
-# export HBASE_HEAPSIZE=1000
+# The maximum amount of heap to use. Default is left to JVM default.
+# export HBASE_HEAPSIZE=1G
 
-# Uncomment below if you intend to use off heap cache.
-# export HBASE_OFFHEAPSIZE=1000
-
-# For example, to allocate 8G of offheap, to 8G:
-# export HBASE_OFFHEAPSIZE=8G
+# Uncomment below if you intend to use off heap cache. For example, to allocate 8G of 
+# offheap, set the value to "8G".
+# export HBASE_OFFHEAPSIZE=1G
 
 # Extra Java runtime options.
 # Below are what we set by default.  May only work with SUN JVM.
 # For more on why as well as other possible settings,
 # see http://wiki.apache.org/hadoop/PerformanceTuning
 export HBASE_OPTS="-XX:+UseConcMarkSweepGC"
+
+# Configure PermSize. Only needed in JDK7. You can safely remove it for JDK8+
+export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -XX:PermSize=128m -XX:MaxPermSize=128m"
+export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -XX:PermSize=128m -XX:MaxPermSize=128m"
 
 # Uncomment one of the below three options to enable java garbage collection logging for the server-side processes.
 

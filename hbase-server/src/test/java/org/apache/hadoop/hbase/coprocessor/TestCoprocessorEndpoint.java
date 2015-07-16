@@ -26,11 +26,14 @@ import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
 
+import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.testclassification.CoprocessorTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
@@ -45,7 +48,6 @@ import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
@@ -72,7 +74,7 @@ public class TestCoprocessorEndpoint {
   private static final Log LOG = LogFactory.getLog(TestCoprocessorEndpoint.class);
 
   private static final TableName TEST_TABLE =
-      TableName.valueOf("TestTable");
+      TableName.valueOf("TestCoprocessorEndpoint");
   private static final byte[] TEST_FAMILY = Bytes.toBytes("TestFamily");
   private static final byte[] TEST_QUALIFIER = Bytes.toBytes("TestQualifier");
   private static byte[] ROW = Bytes.toBytes("testRow");
@@ -88,6 +90,7 @@ public class TestCoprocessorEndpoint {
   public static void setupBeforeClass() throws Exception {
     // set configure to indicate which cp should be loaded
     Configuration conf = util.getConfiguration();
+    conf.setInt(HConstants.HBASE_CLIENT_OPERATION_TIMEOUT, 5000);
     conf.setStrings(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY,
         org.apache.hadoop.hbase.coprocessor.ColumnAggregationEndpoint.class.getName(),
         ProtobufCoprocessorService.class.getName());
@@ -99,12 +102,11 @@ public class TestCoprocessorEndpoint {
     desc.addFamily(new HColumnDescriptor(TEST_FAMILY));
     admin.createTable(desc, new byte[][]{ROWS[rowSeperator1], ROWS[rowSeperator2]});
     util.waitUntilAllRegionsAssigned(TEST_TABLE);
-    admin.close();
 
     Table table = util.getConnection().getTable(TEST_TABLE);
     for (int i = 0; i < ROWSIZE; i++) {
       Put put = new Put(ROWS[i]);
-      put.add(TEST_FAMILY, TEST_QUALIFIER, Bytes.toBytes(i));
+      put.addColumn(TEST_FAMILY, TEST_QUALIFIER, Bytes.toBytes(i));
       table.put(put);
     }
     table.close();
@@ -174,9 +176,12 @@ public class TestCoprocessorEndpoint {
 
   @Test
   public void testCoprocessorService() throws Throwable {
-    HTable table = (HTable) util.getConnection().getTable(TEST_TABLE);
-    NavigableMap<HRegionInfo,ServerName> regions = table.getRegionLocations();
+    Table table = util.getConnection().getTable(TEST_TABLE);
 
+    List<HRegionLocation> regions;
+    try(RegionLocator rl = util.getConnection().getRegionLocator(TEST_TABLE)) {
+      regions = rl.getAllRegionLocations();
+    }
     final TestProtos.EchoRequestProto request =
         TestProtos.EchoRequestProto.newBuilder().setMessage("hello").build();
     final Map<byte[], String> results = Collections.synchronizedMap(
@@ -209,9 +214,9 @@ public class TestCoprocessorEndpoint {
         LOG.info("Got value "+e.getValue()+" for region "+Bytes.toStringBinary(e.getKey()));
       }
       assertEquals(3, results.size());
-      for (HRegionInfo info : regions.navigableKeySet()) {
-        LOG.info("Region info is "+info.getRegionNameAsString());
-        assertTrue(results.containsKey(info.getRegionName()));
+      for (HRegionLocation info : regions) {
+        LOG.info("Region info is "+info.getRegionInfo().getRegionNameAsString());
+        assertTrue(results.containsKey(info.getRegionInfo().getRegionName()));
       }
       results.clear();
 
@@ -248,8 +253,11 @@ public class TestCoprocessorEndpoint {
 
   @Test
   public void testCoprocessorServiceNullResponse() throws Throwable {
-    HTable table = (HTable) util.getConnection().getTable(TEST_TABLE);
-    NavigableMap<HRegionInfo,ServerName> regions = table.getRegionLocations();
+    Table table = util.getConnection().getTable(TEST_TABLE);
+    List<HRegionLocation> regions;
+    try(RegionLocator rl = util.getConnection().getRegionLocator(TEST_TABLE)) {
+      regions = rl.getAllRegionLocations();
+    }
 
     final TestProtos.EchoRequestProto request =
         TestProtos.EchoRequestProto.newBuilder().setMessage("hello").build();
@@ -274,7 +282,8 @@ public class TestCoprocessorEndpoint {
         LOG.info("Got value "+e.getValue()+" for region "+Bytes.toStringBinary(e.getKey()));
       }
       assertEquals(3, results.size());
-      for (HRegionInfo info : regions.navigableKeySet()) {
+      for (HRegionLocation region : regions) {
+        HRegionInfo info = region.getRegionInfo();
         LOG.info("Region info is "+info.getRegionNameAsString());
         assertTrue(results.containsKey(info.getRegionName()));
         assertNull(results.get(info.getRegionName()));

@@ -23,16 +23,13 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
@@ -47,7 +44,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionLocation;
@@ -56,7 +52,6 @@ import org.apache.hadoop.hbase.RegionLocations;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
-import org.apache.hadoop.hbase.client.ConnectionManager.HConnectionImplementation;
 import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
@@ -66,18 +61,15 @@ import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FilterBase;
 import org.apache.hadoop.hbase.ipc.RpcClient;
 import org.apache.hadoop.hbase.master.HMaster;
-import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionServerStoppedException;
-import org.apache.hadoop.hbase.testclassification.FlakeyTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.JVMClusterUtil;
 import org.apache.hadoop.hbase.util.ManualEnvironmentEdge;
 import org.apache.hadoop.hbase.util.Threads;
-import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
-import org.jboss.netty.util.internal.DetectionUtil;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
@@ -90,7 +82,7 @@ import com.google.common.collect.Lists;
 /**
  * This class is for testing HBaseConnectionManager features
  */
-@Category({MediumTests.class, FlakeyTests.class})
+@Category({MediumTests.class})
 public class TestHCM {
   private static final Log LOG = LogFactory.getLog(TestHCM.class);
   private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
@@ -108,8 +100,6 @@ public class TestHCM {
   private static final byte[] ROW = Bytes.toBytes("bbb");
   private static final byte[] ROW_X = Bytes.toBytes("xxx");
   private static Random _randy = new Random();
-
-  private static boolean isJavaOk = DetectionUtil.javaVersion() > 6;
 
 /**
 * This copro sleeps 20 second. The first call it fails. The second time, it works.
@@ -132,21 +122,12 @@ public class TestHCM {
 
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
-    TEST_UTIL.getConfiguration().setBoolean(HConstants.STATUS_PUBLISHED,
-      HConstants.STATUS_PUBLISHED_DEFAULT);
-    if (isJavaOk) {
-      TEST_UTIL.getConfiguration().setBoolean(HConstants.STATUS_PUBLISHED, true);
-    }
+    TEST_UTIL.getConfiguration().setBoolean(HConstants.STATUS_PUBLISHED, true);
     TEST_UTIL.startMiniCluster(2);
   }
 
   @AfterClass public static void tearDownAfterClass() throws Exception {
     TEST_UTIL.shutdownMiniCluster();
-  }
-
-
-  private static int getHConnectionManagerCacheSize(){
-    return HConnectionTestingUtility.getConnectionCount();
   }
 
   @Test
@@ -156,16 +137,17 @@ public class TestHCM {
         new SynchronousQueue<Runnable>(),
         Threads.newDaemonThreadFactory("test-hcm"));
 
-    HConnection con1 = HConnectionManager.createConnection(TEST_UTIL.getConfiguration());
-    HConnection con2 = HConnectionManager.createConnection(TEST_UTIL.getConfiguration(), otherPool);
+    Connection con1 = ConnectionFactory.createConnection(TEST_UTIL.getConfiguration());
+    Connection con2 = ConnectionFactory.createConnection(TEST_UTIL.getConfiguration(), otherPool);
     // make sure the internally created ExecutorService is the one passed
-    assertTrue(otherPool == ((HConnectionImplementation)con2).getCurrentBatchPool());
+    assertTrue(otherPool == ((ConnectionImplementation) con2).getCurrentBatchPool());
 
-    String tableName = "testClusterConnection";
-    TEST_UTIL.createTable(tableName.getBytes(), FAM_NAM).close();
+    TableName tableName = TableName.valueOf("testClusterConnection");
+    TEST_UTIL.createTable(tableName, FAM_NAM).close();
     HTable t = (HTable)con1.getTable(tableName, otherPool);
     // make sure passing a pool to the getTable does not trigger creation of an internal pool
-    assertNull("Internal Thread pool should be null", ((HConnectionImplementation)con1).getCurrentBatchPool());
+    assertNull("Internal Thread pool should be null",
+        ((ConnectionImplementation) con1).getCurrentBatchPool());
     // table should use the pool passed
     assertTrue(otherPool == t.getPool());
     t.close();
@@ -175,18 +157,18 @@ public class TestHCM {
     assertTrue(otherPool == t.getPool());
     t.close();
 
-    t = (HTable)con2.getTable(Bytes.toBytes(tableName));
+    t = (HTable)con2.getTable(tableName);
     // try other API too
     assertTrue(otherPool == t.getPool());
     t.close();
 
-    t = (HTable)con2.getTable(TableName.valueOf(tableName));
+    t = (HTable)con2.getTable(tableName);
     // try other API too
     assertTrue(otherPool == t.getPool());
     t.close();
 
     t = (HTable)con1.getTable(tableName);
-    ExecutorService pool = ((HConnectionImplementation)con1).getCurrentBatchPool();
+    ExecutorService pool = ((ConnectionImplementation)con1).getCurrentBatchPool();
     // make sure an internal pool was created
     assertNotNull("An internal Thread pool should have been created", pool);
     // and that the table is using it
@@ -224,10 +206,6 @@ public class TestHCM {
   // Fails too often!  Needs work.  HBASE-12558
   @Ignore @Test(expected = RegionServerStoppedException.class)
   public void testClusterStatus() throws Exception {
-    if (!isJavaOk){
-      // This test requires jdk 1.7+
-      throw new RegionServerStoppedException("as expected by the test...");
-    }
 
     TableName tn =
         TableName.valueOf("testClusterStatus");
@@ -238,25 +216,27 @@ public class TestHCM {
     rs.waitForServerOnline();
     final ServerName sn = rs.getRegionServer().getServerName();
 
-    HTable t = TEST_UTIL.createTable(tn, cf);
+    Table t = TEST_UTIL.createTable(tn, cf);
     TEST_UTIL.waitTableAvailable(tn);
 
     while(TEST_UTIL.getHBaseCluster().getMaster().getAssignmentManager().
         getRegionStates().isRegionsInTransition()){
       Thread.sleep(1);
     }
-    final HConnectionImplementation hci =  (HConnectionImplementation)t.getConnection();
-    while (t.getRegionLocation(rk).getPort() != sn.getPort()){
-      TEST_UTIL.getHBaseAdmin().move(t.getRegionLocation(rk).getRegionInfo().
-          getEncodedNameAsBytes(), Bytes.toBytes(sn.toString()));
-      while(TEST_UTIL.getHBaseCluster().getMaster().getAssignmentManager().
-          getRegionStates().isRegionsInTransition()){
-        Thread.sleep(1);
+    final ConnectionImplementation hci =  (ConnectionImplementation)TEST_UTIL.getConnection();
+    try (RegionLocator l = TEST_UTIL.getConnection().getRegionLocator(tn)) {
+      while (l.getRegionLocation(rk).getPort() != sn.getPort()) {
+        TEST_UTIL.getHBaseAdmin().move(l.getRegionLocation(rk).getRegionInfo().
+            getEncodedNameAsBytes(), Bytes.toBytes(sn.toString()));
+        while (TEST_UTIL.getHBaseCluster().getMaster().getAssignmentManager().
+            getRegionStates().isRegionsInTransition()) {
+          Thread.sleep(1);
+        }
+        hci.clearRegionCache(tn);
       }
-      hci.clearRegionCache(tn);
+      Assert.assertNotNull(hci.clusterStatusListener);
+      TEST_UTIL.assertRegionOnServer(l.getRegionLocation(rk).getRegionInfo(), sn, 20000);
     }
-    Assert.assertNotNull(hci.clusterStatusListener);
-    TEST_UTIL.assertRegionOnServer(t.getRegionLocation(rk).getRegionInfo(), sn, 20000);
 
     Put p1 = new Put(rk);
     p1.add(cf, "qual".getBytes(), "val".getBytes());
@@ -310,27 +290,31 @@ public class TestHCM {
   public void testOperationTimeout() throws Exception {
     HTableDescriptor hdt = TEST_UTIL.createTableDescriptor("HCM-testOperationTimeout");
     hdt.addCoprocessor(SleepAndFailFirstTime.class.getName());
-    HTable table = TEST_UTIL.createTable(hdt, new byte[][]{FAM_NAM}, TEST_UTIL.getConfiguration());
+    Table t = TEST_UTIL.createTable(hdt, new byte[][]{FAM_NAM}, null);
 
-    // Check that it works if the timeout is big enough
-    table.setOperationTimeout(120 * 1000);
-    table.get(new Get(FAM_NAM));
+    if (t instanceof HTable) {
+      HTable table = (HTable) t;
 
-    // Resetting and retrying. Will fail this time, not enough time for the second try
-    SleepAndFailFirstTime.ct.set(0);
-    try {
-      table.setOperationTimeout(30 * 1000);
+      // Check that it works if the timeout is big enough
+      table.setOperationTimeout(120 * 1000);
       table.get(new Get(FAM_NAM));
-      Assert.fail("We expect an exception here");
-    } catch (SocketTimeoutException e) {
-      // The client has a CallTimeout class, but it's not shared.We're not very clean today,
-      //  in the general case you can expect the call to stop, but the exception may vary.
-      // In this test however, we're sure that it will be a socket timeout.
-      LOG.info("We received an exception, as expected ", e);
-    } catch (IOException e) {
-      Assert.fail("Wrong exception:" + e.getMessage());
-    } finally {
-      table.close();
+
+      // Resetting and retrying. Will fail this time, not enough time for the second try
+      SleepAndFailFirstTime.ct.set(0);
+      try {
+        table.setOperationTimeout(30 * 1000);
+        table.get(new Get(FAM_NAM));
+        Assert.fail("We expect an exception here");
+      } catch (SocketTimeoutException e) {
+        // The client has a CallTimeout class, but it's not shared.We're not very clean today,
+        //  in the general case you can expect the call to stop, but the exception may vary.
+        // In this test however, we're sure that it will be a socket timeout.
+        LOG.info("We received an exception, as expected ", e);
+      } catch (IOException e) {
+        Assert.fail("Wrong exception:" + e.getMessage());
+      } finally {
+        table.close();
+      }
     }
   }
 
@@ -350,10 +334,10 @@ public class TestHCM {
     c2.setBoolean(RpcClient.SPECIFIC_WRITE_THREAD, allowsInterrupt);
 
     Connection connection = ConnectionFactory.createConnection(c2);
-    final HTable table = (HTable) connection.getTable(tableName);
+    final Table table = connection.getTable(tableName);
 
     Put put = new Put(ROW);
-    put.add(FAM_NAM, ROW, ROW);
+    put.addColumn(FAM_NAM, ROW, ROW);
     table.put(put);
 
     // 4 steps: ready=0; doGets=1; mustStop=2; stopped=3
@@ -388,9 +372,12 @@ public class TestHCM {
       }
     });
 
-    ServerName sn = table.getRegionLocation(ROW).getServerName();
-    ConnectionManager.HConnectionImplementation conn =
-        (ConnectionManager.HConnectionImplementation) table.getConnection();
+    ServerName sn;
+    try(RegionLocator rl = connection.getRegionLocator(tableName)) {
+      sn = rl.getRegionLocation(ROW).getServerName();
+    }
+    ConnectionImplementation conn =
+        (ConnectionImplementation) connection;
     RpcClient rpcClient = conn.getRpcClient();
 
     LOG.info("Going to cancel connections. connection=" + conn.toString() + ", sn=" + sn);
@@ -408,7 +395,6 @@ public class TestHCM {
         return step.get() == 3;
       }
     });
-
     table.close();
     connection.close();
     Assert.assertTrue("Unexpected exception is " + failed.get(), failed.get() == null);
@@ -481,10 +467,6 @@ public class TestHCM {
    */
   @Test
   public void testConnectionCut() throws Exception {
-    if (!isJavaOk){
-      // This test requires jdk 1.7+
-      return;
-    }
 
     TableName tableName = TableName.valueOf("HCM-testConnectionCut");
 
@@ -498,14 +480,18 @@ public class TestHCM {
     c2.setInt(HConstants.HBASE_RPC_TIMEOUT_KEY, 30 * 1000);
 
     final Connection connection = ConnectionFactory.createConnection(c2);
-    final HTable table = (HTable) connection.getTable(tableName);
+    final Table table = connection.getTable(tableName);
 
     Put p = new Put(FAM_NAM);
-    p.add(FAM_NAM, FAM_NAM, FAM_NAM);
+    p.addColumn(FAM_NAM, FAM_NAM, FAM_NAM);
     table.put(p);
 
-    final HConnectionImplementation hci =  (HConnectionImplementation)table.getConnection();
-    final HRegionLocation loc = table.getRegionLocation(FAM_NAM);
+    final ConnectionImplementation hci =  (ConnectionImplementation) connection;
+
+    final HRegionLocation loc;
+    try(RegionLocator rl = connection.getRegionLocator(tableName)) {
+      loc = rl.getRegionLocation(FAM_NAM);
+    }
 
     Get get = new Get(FAM_NAM);
     Assert.assertNotNull(table.get(get));
@@ -539,7 +525,6 @@ public class TestHCM {
     } finally {
       syncBlockingFilter.set(true);
       t.join();
-      HConnectionManager.getConnection(c2).close();
       TEST_UTIL.getHBaseAdmin().setBalancerRunning(previousBalance, true);
     }
 
@@ -572,28 +557,6 @@ public class TestHCM {
     }
   }
 
-  @Test
-  public void abortingHConnectionRemovesItselfFromHCM() throws Exception {
-    // Save off current HConnections
-    Map<HConnectionKey, HConnectionImplementation> oldHBaseInstances =
-        new HashMap<HConnectionKey, HConnectionImplementation>();
-    oldHBaseInstances.putAll(ConnectionManager.CONNECTION_INSTANCES);
-
-    ConnectionManager.CONNECTION_INSTANCES.clear();
-
-    try {
-      HConnection connection = HConnectionManager.getConnection(TEST_UTIL.getConfiguration());
-      connection.abort("test abortingHConnectionRemovesItselfFromHCM", new Exception(
-          "test abortingHConnectionRemovesItselfFromHCM"));
-      Assert.assertNotSame(connection,
-        HConnectionManager.getConnection(TEST_UTIL.getConfiguration()));
-    } finally {
-      // Put original HConnections back
-      ConnectionManager.CONNECTION_INSTANCES.clear();
-      ConnectionManager.CONNECTION_INSTANCES.putAll(oldHBaseInstances);
-    }
-  }
-
   /**
    * Test that when we delete a location using the first row of a region
    * that we really delete it.
@@ -605,14 +568,13 @@ public class TestHCM {
     Configuration conf =  new Configuration(TEST_UTIL.getConfiguration());
     conf.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 1);
     Connection connection = ConnectionFactory.createConnection(conf);
-    final HTable table = (HTable) connection.getTable(TABLE_NAME);
+    final Table table = connection.getTable(TABLE_NAME);
 
     TEST_UTIL.waitUntilAllRegionsAssigned(table.getName());
     Put put = new Put(ROW);
     put.add(FAM_NAM, ROW, ROW);
     table.put(put);
-    ConnectionManager.HConnectionImplementation conn =
-      (ConnectionManager.HConnectionImplementation)table.getConnection();
+    ConnectionImplementation conn = (ConnectionImplementation) connection;
 
     assertNotNull(conn.getCachedLocation(TABLE_NAME, ROW));
 
@@ -714,7 +676,7 @@ public class TestHCM {
       Assert.assertArrayEquals(e.getRow(0).getRow(), ROW);
 
       // Check that we unserialized the exception as expected
-      Throwable cause = ConnectionManager.findException(e.getCause(0));
+      Throwable cause = ConnectionImplementation.findException(e.getCause(0));
       Assert.assertNotNull(cause);
       Assert.assertTrue(cause instanceof RegionMovedException);
     }
@@ -808,12 +770,11 @@ public class TestHCM {
    */
   @Test(timeout = 60000)
   public void testCacheSeqNums() throws Exception{
-    HTable table = TEST_UTIL.createMultiRegionTable(TABLE_NAME2, FAM_NAM);
+    Table table = TEST_UTIL.createMultiRegionTable(TABLE_NAME2, FAM_NAM);
     Put put = new Put(ROW);
     put.add(FAM_NAM, ROW, ROW);
     table.put(put);
-    ConnectionManager.HConnectionImplementation conn =
-      (ConnectionManager.HConnectionImplementation)table.getConnection();
+    ConnectionImplementation conn = (ConnectionImplementation) TEST_UTIL.getConnection();
 
     HRegionLocation location = conn.getCachedLocation(TABLE_NAME2, ROW).getRegionLocation();
     assertNotNull(location);
@@ -850,88 +811,6 @@ public class TestHCM {
     table.close();
   }
 
-  /**
-   * Make sure that {@link Configuration} instances that are essentially the
-   * same map to the same {@link HConnection} instance.
-   */
-  @Test
-  public void testConnectionSameness() throws Exception {
-    Connection previousConnection = null;
-    for (int i = 0; i < 2; i++) {
-      // set random key to differentiate the connection from previous ones
-      Configuration configuration = TEST_UTIL.getConfiguration();
-      configuration.set("some_key", String.valueOf(_randy.nextInt()));
-      LOG.info("The hash code of the current configuration is: "
-          + configuration.hashCode());
-      Connection currentConnection = HConnectionManager
-          .getConnection(configuration);
-      if (previousConnection != null) {
-        assertTrue(
-            "Did not get the same connection even though its key didn't change",
-            previousConnection == currentConnection);
-      }
-      previousConnection = currentConnection;
-      // change the configuration, so that it is no longer reachable from the
-      // client's perspective. However, since its part of the LRU doubly linked
-      // list, it will eventually get thrown out, at which time it should also
-      // close the corresponding {@link HConnection}.
-      configuration.set("other_key", String.valueOf(_randy.nextInt()));
-    }
-  }
-
-  /**
-   * Makes sure that there is no leaking of
-   * {@link ConnectionManager.HConnectionImplementation} in the {@link HConnectionManager}
-   * class.
-   * @deprecated Tests deprecated functionality.  Remove in 1.0.
-   */
-  @Deprecated
-  @Test
-  public void testConnectionUniqueness() throws Exception {
-    int zkmaxconnections = TEST_UTIL.getConfiguration().
-      getInt(HConstants.ZOOKEEPER_MAX_CLIENT_CNXNS,
-          HConstants.DEFAULT_ZOOKEPER_MAX_CLIENT_CNXNS);
-    // Test up to a max that is < the maximum number of zk connections.  If we
-    // go above zk connections, we just fall into cycle where we are failing
-    // to set up a session and test runs for a long time.
-    int maxConnections = Math.min(zkmaxconnections - 1, 20);
-    List<HConnection> connections = new ArrayList<HConnection>(maxConnections);
-    Connection previousConnection = null;
-    try {
-      for (int i = 0; i < maxConnections; i++) {
-        // set random key to differentiate the connection from previous ones
-        Configuration configuration = new Configuration(TEST_UTIL.getConfiguration());
-        configuration.set("some_key", String.valueOf(_randy.nextInt()));
-        configuration.set(HConstants.HBASE_CLIENT_INSTANCE_ID,
-            String.valueOf(_randy.nextInt()));
-        LOG.info("The hash code of the current configuration is: "
-            + configuration.hashCode());
-        HConnection currentConnection =
-          HConnectionManager.getConnection(configuration);
-        if (previousConnection != null) {
-          assertTrue("Got the same connection even though its key changed!",
-              previousConnection != currentConnection);
-        }
-        // change the configuration, so that it is no longer reachable from the
-        // client's perspective. However, since its part of the LRU doubly linked
-        // list, it will eventually get thrown out, at which time it should also
-        // close the corresponding {@link HConnection}.
-        configuration.set("other_key", String.valueOf(_randy.nextInt()));
-
-        previousConnection = currentConnection;
-        LOG.info("The current HConnectionManager#HBASE_INSTANCES cache size is: "
-            + getHConnectionManagerCacheSize());
-        Thread.sleep(50);
-        connections.add(currentConnection);
-      }
-    } finally {
-      for (Connection c: connections) {
-        // Clean up connections made so we don't interfere w/ subsequent tests.
-        HConnectionManager.deleteConnection(c.getConfiguration());
-      }
-    }
-  }
-
   @Test
   public void testClosing() throws Exception {
     Configuration configuration =
@@ -939,38 +818,26 @@ public class TestHCM {
     configuration.set(HConstants.HBASE_CLIENT_INSTANCE_ID,
         String.valueOf(_randy.nextInt()));
 
+    // as connection caching is going away, now we're just testing
+    // that closed connection does actually get closed.
+
     Connection c1 = ConnectionFactory.createConnection(configuration);
-    // We create two connections with the same key.
     Connection c2 = ConnectionFactory.createConnection(configuration);
+    // no caching, different connections
+    assertTrue(c1 != c2);
 
-    Connection c3 = HConnectionManager.getConnection(configuration);
-    Connection c4 = HConnectionManager.getConnection(configuration);
-    assertTrue(c3 == c4);
-
+    // closing independently
     c1.close();
     assertTrue(c1.isClosed());
     assertFalse(c2.isClosed());
-    assertFalse(c3.isClosed());
 
-    c3.close();
-    // still a reference left
-    assertFalse(c3.isClosed());
-    c3.close();
-    assertTrue(c3.isClosed());
-    // c3 was removed from the cache
-    Connection c5 = HConnectionManager.getConnection(configuration);
-    assertTrue(c5 != c3);
-
-    assertFalse(c2.isClosed());
     c2.close();
     assertTrue(c2.isClosed());
-    c5.close();
-    assertTrue(c5.isClosed());
   }
 
   /**
    * Trivial test to verify that nobody messes with
-   * {@link HConnectionManager#createConnection(Configuration)}
+   * {@link ConnectionFactory#createConnection(Configuration)}
    */
   @Test
   public void testCreateConnection() throws Exception {
@@ -980,12 +847,7 @@ public class TestHCM {
     // created from the same configuration, yet they are different
     assertTrue(c1 != c2);
     assertTrue(c1.getConfiguration() == c2.getConfiguration());
-    // make sure these were not cached
-    Connection c3 = HConnectionManager.getConnection(configuration);
-    assertTrue(c1 != c3);
-    assertTrue(c2 != c3);
   }
-
 
   /**
    * This test checks that one can connect to the cluster with only the
@@ -998,16 +860,16 @@ public class TestHCM {
     Configuration c = new Configuration();
     c.set(HConstants.ZOOKEEPER_QUORUM,
       TEST_UTIL.getConfiguration().get(HConstants.ZOOKEEPER_QUORUM));
-    c.set(HConstants.ZOOKEEPER_CLIENT_PORT ,
+    c.set(HConstants.ZOOKEEPER_CLIENT_PORT,
       TEST_UTIL.getConfiguration().get(HConstants.ZOOKEEPER_CLIENT_PORT));
 
     // This should be enough to connect
-    HConnection conn = HConnectionManager.getConnection(c);
-    assertTrue( conn.isMasterRunning() );
+    HConnection conn = (HConnection) ConnectionFactory.createConnection(c);
+    assertTrue(conn.isMasterRunning());
     conn.close();
   }
 
-  private int setNumTries(HConnectionImplementation hci, int newVal) throws Exception {
+  private int setNumTries(ConnectionImplementation hci, int newVal) throws Exception {
     Field numTries = hci.getClass().getDeclaredField("numTries");
     numTries.setAccessible(true);
     Field modifiersField = Field.class.getDeclaredField("modifiers");
@@ -1021,10 +883,10 @@ public class TestHCM {
 
   @Test (timeout=30000)
   public void testMulti() throws Exception {
-    HTable table = TEST_UTIL.createMultiRegionTable(TABLE_NAME3, FAM_NAM);
+    Table table = TEST_UTIL.createMultiRegionTable(TABLE_NAME3, FAM_NAM);
      try {
-       ConnectionManager.HConnectionImplementation conn =
-           ( ConnectionManager.HConnectionImplementation)table.getConnection();
+       ConnectionImplementation conn =
+           (ConnectionImplementation)TEST_UTIL.getConnection();
 
        // We're now going to move the region and check that it works for the client
        // First a new put to add the location in the cache
@@ -1058,9 +920,9 @@ public class TestHCM {
        ServerName destServerName = destServer.getServerName();
 
        //find another row in the cur server that is less than ROW_X
-       List<HRegion> regions = curServer.getOnlineRegions(TABLE_NAME3);
+       List<Region> regions = curServer.getOnlineRegions(TABLE_NAME3);
        byte[] otherRow = null;
-       for (HRegion region : regions) {
+       for (Region region : regions) {
          if (!region.getRegionInfo().getEncodedName().equals(toMove.getRegionInfo().getEncodedName())
              && Bytes.BYTES_COMPARATOR.compare(region.getRegionInfo().getStartKey(), ROW_X) < 0) {
            otherRow = region.getRegionInfo().getStartKey();
@@ -1121,8 +983,9 @@ public class TestHCM {
        Put put4 = new Put(otherRow);
        put4.add(FAM_NAM, otherRow, otherRow);
 
-       // do multi
-       table.batch(Lists.newArrayList(put4, put3)); // first should be a valid row,
+      // do multi
+      ArrayList<Put> actions = Lists.newArrayList(put4, put3);
+      table.batch(actions, null); // first should be a valid row,
        // second we get RegionMovedException.
 
        setNumTries(conn, prevNumRetriesVal);
@@ -1143,8 +1006,8 @@ public class TestHCM {
     try {
       long timeBase = timeMachine.currentTime();
       long largeAmountOfTime = ANY_PAUSE * 1000;
-      ConnectionManager.ServerErrorTracker tracker =
-          new ConnectionManager.ServerErrorTracker(largeAmountOfTime, 100);
+      ConnectionImplementation.ServerErrorTracker tracker =
+          new ConnectionImplementation.ServerErrorTracker(largeAmountOfTime, 100);
 
       // The default backoff is 0.
       assertEquals(0, tracker.calculateBackoffTime(location, ANY_PAUSE));
@@ -1196,86 +1059,7 @@ public class TestHCM {
 
   private static void assertEqualsWithJitter(long expected, long actual, long jitterBase) {
     assertTrue("Value not within jitter: " + expected + " vs " + actual,
-        Math.abs(actual - expected) <= (0.01f * jitterBase));
-  }
-
-  /**
-   * Tests that a destroyed connection does not have a live zookeeper.
-   * Below is timing based.  We put up a connection to a table and then close the connection while
-   * having a background thread running that is forcing close of the connection to try and
-   * provoke a close catastrophe; we are hoping for a car crash so we can see if we are leaking
-   * zk connections.
-   * @throws Exception
-   */
-  @Ignore ("Flakey test: See HBASE-8996")@Test
-  public void testDeleteForZKConnLeak() throws Exception {
-    TEST_UTIL.createTable(TABLE_NAME4, FAM_NAM);
-    final Configuration config = HBaseConfiguration.create(TEST_UTIL.getConfiguration());
-    config.setInt("zookeeper.recovery.retry", 1);
-    config.setInt("zookeeper.recovery.retry.intervalmill", 1000);
-    config.setInt("hbase.rpc.timeout", 2000);
-    config.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 1);
-
-    ThreadPoolExecutor pool = new ThreadPoolExecutor(1, 10,
-      5, TimeUnit.SECONDS,
-      new SynchronousQueue<Runnable>(),
-      Threads.newDaemonThreadFactory("test-hcm-delete"));
-
-    pool.submit(new Runnable() {
-      @Override
-      public void run() {
-        while (!Thread.interrupted()) {
-          try {
-            HConnection conn = HConnectionManager.getConnection(config);
-            LOG.info("Connection " + conn);
-            HConnectionManager.deleteStaleConnection(conn);
-            LOG.info("Connection closed " + conn);
-            // TODO: This sleep time should be less than the time that it takes to open and close
-            // a table.  Ideally we would do a few runs first to measure.  For now this is
-            // timing based; hopefully we hit the bad condition.
-            Threads.sleep(10);
-          } catch (Exception e) {
-          }
-        }
-      }
-    });
-
-    // Use connection multiple times.
-    for (int i = 0; i < 30; i++) {
-      Connection c1 = null;
-      try {
-        c1 = ConnectionManager.getConnectionInternal(config);
-        LOG.info("HTable connection " + i + " " + c1);
-        Table table = c1.getTable(TABLE_NAME4, pool);
-        table.close();
-        LOG.info("HTable connection " + i + " closed " + c1);
-      } catch (Exception e) {
-        LOG.info("We actually want this to happen!!!!  So we can see if we are leaking zk", e);
-      } finally {
-        if (c1 != null) {
-          if (c1.isClosed()) {
-            // cannot use getZooKeeper as method instantiates watcher if null
-            Field zkwField = c1.getClass().getDeclaredField("keepAliveZookeeper");
-            zkwField.setAccessible(true);
-            Object watcher = zkwField.get(c1);
-
-            if (watcher != null) {
-              if (((ZooKeeperWatcher)watcher).getRecoverableZooKeeper().getState().isAlive()) {
-                // non-synchronized access to watcher; sleep and check again in case zk connection
-                // hasn't been cleaned up yet.
-                Thread.sleep(1000);
-                if (((ZooKeeperWatcher) watcher).getRecoverableZooKeeper().getState().isAlive()) {
-                  pool.shutdownNow();
-                  fail("Live zookeeper in closed connection");
-                }
-              }
-            }
-          }
-          c1.close();
-        }
-      }
-    }
-    pool.shutdownNow();
+      Math.abs(actual - expected) <= (0.01f * jitterBase));
   }
 
   @Test(timeout = 60000)
@@ -1283,7 +1067,7 @@ public class TestHCM {
     Configuration config = new Configuration(TEST_UTIL.getConfiguration());
 
     TableName tableName = TableName.valueOf("testConnectionRideOverClusterRestart");
-    TEST_UTIL.createTable(tableName.getName(), new byte[][] {FAM_NAM}, config).close();
+    TEST_UTIL.createTable(tableName, new byte[][] {FAM_NAM}).close();
 
     Connection connection = ConnectionFactory.createConnection(config);
     Table table = connection.getTable(tableName);

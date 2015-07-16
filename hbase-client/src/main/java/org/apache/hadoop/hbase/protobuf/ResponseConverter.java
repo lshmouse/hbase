@@ -17,9 +17,12 @@
  */
 package org.apache.hadoop.hbase.protobuf;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -44,8 +47,11 @@ import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.RegionAction;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.RegionActionResult;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.ResultOrException;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.ScanResponse;
+import org.apache.hadoop.hbase.protobuf.generated.ClusterStatusProtos.RegionStoreSequenceIds;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.NameBytesPair;
+import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.NameInt64Pair;
+import org.apache.hadoop.hbase.protobuf.generated.MapReduceProtos.ScanMetrics;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.EnableCatalogJanitorResponse;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.RunCatalogScanResponse;
 import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.GetLastFlushedSequenceIdResponse;
@@ -62,7 +68,7 @@ import com.google.protobuf.RpcController;
  */
 @InterfaceAudience.Private
 public final class ResponseConverter {
-  public static final Log LOG = LogFactory.getLog(ResponseConverter.class);
+  private static final Log LOG = LogFactory.getLog(ResponseConverter.class);
 
   private ResponseConverter() {
   }
@@ -300,8 +306,10 @@ public final class ResponseConverter {
    * @return A GetLastFlushedSequenceIdResponse
    */
   public static GetLastFlushedSequenceIdResponse buildGetLastFlushedSequenceIdResponse(
-      long seqId) {
-    return GetLastFlushedSequenceIdResponse.newBuilder().setLastFlushedSequenceId(seqId).build();
+      RegionStoreSequenceIds ids) {
+    return GetLastFlushedSequenceIdResponse.newBuilder()
+        .setLastFlushedSequenceId(ids.getLastFlushedSequenceId())
+        .addAllStoreLastFlushedSequenceId(ids.getStoreSequenceIdList()).build();
   }
 
   /**
@@ -319,6 +327,25 @@ public final class ResponseConverter {
       }
     }
   }
+
+  /**
+   * Retreivies exception stored during RPC invocation.
+   * @param controller the controller instance provided by the client when calling the service
+   * @return exception if any, or null; Will return DoNotRetryIOException for string represented
+   * failure causes in controller.
+   */
+  @Nullable
+  public static IOException getControllerException(RpcController controller) throws IOException {
+    if (controller != null && controller.failed()) {
+      if (controller instanceof ServerRpcController) {
+        return ((ServerRpcController)controller).getFailedOn();
+      } else {
+        return new DoNotRetryIOException(controller.errorText());
+      }
+    }
+    return null;
+  }
+
 
   /**
    * Create Results from the cells using the cells meta data. 
@@ -339,6 +366,9 @@ public final class ResponseConverter {
         // Cells are out in cellblocks.  Group them up again as Results.  How many to read at a
         // time will be found in getCellsLength -- length here is how many Cells in the i'th Result
         int noOfCells = response.getCellsPerResult(i);
+        boolean isPartial =
+            response.getPartialFlagPerResultCount() > i ?
+                response.getPartialFlagPerResult(i) : false;
         List<Cell> cells = new ArrayList<Cell>(noOfCells);
         for (int j = 0; j < noOfCells; j++) {
           try {
@@ -361,12 +391,34 @@ public final class ResponseConverter {
           }
           cells.add(cellScanner.current());
         }
-        results[i] = Result.create(cells, null, response.getStale());
+        results[i] = Result.create(cells, null, response.getStale(), isPartial);
       } else {
         // Result is pure pb.
         results[i] = ProtobufUtil.toResult(response.getResults(i));
       }
     }
     return results;
+  }
+
+  public static Map<String, Long> getScanMetrics(ScanResponse response) {
+    Map<String, Long> metricMap = new HashMap<String, Long>();
+    if (response == null || !response.hasScanMetrics() || response.getScanMetrics() == null) {
+      return metricMap;
+    }
+    
+    ScanMetrics metrics = response.getScanMetrics();
+    int numberOfMetrics = metrics.getMetricsCount();
+    for (int i = 0; i < numberOfMetrics; i++) {
+      NameInt64Pair metricPair = metrics.getMetrics(i);
+      if (metricPair != null) {
+        String name = metricPair.getName();
+        Long value = metricPair.getValue();
+        if (name != null && value != null) {
+          metricMap.put(name, value);
+        }
+      }
+    }
+
+    return metricMap;
   }
 }

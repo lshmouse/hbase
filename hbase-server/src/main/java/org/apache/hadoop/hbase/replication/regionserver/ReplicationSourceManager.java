@@ -43,6 +43,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Server;
+import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.RegionServerCoprocessorHost;
@@ -61,9 +62,11 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 /**
  * This class is responsible to manage all the replication
  * sources. There are two classes of sources:
+ * <ul>
  * <li> Normal sources are persistent and one per peer cluster</li>
  * <li> Old sources are recovered from a failed region server and our
  * only goal is to finish replicating the WAL queue it had up in ZK</li>
+ * </ul>
  *
  * When a region server dies, this class uses a watcher to get notified and it
  * tries to grab a lock in order to transfer all the queues in a local
@@ -200,7 +203,7 @@ public class ReplicationSourceManager implements ReplicationListener {
       }
     }
  }
-  
+
   private void cleanOldLogs(SortedSet<String> wals, String key, String id) {
     SortedSet<String> walSet = wals.headSet(key);
     LOG.debug("Removing " + walSet.size() + " logs in the list: " + walSet);
@@ -302,7 +305,7 @@ public class ReplicationSourceManager implements ReplicationListener {
   protected Map<String, SortedSet<String>> getWALs() {
     return Collections.unmodifiableMap(walsById);
   }
-  
+
   /**
    * Get a copy of the wals of the recovered sources on this rs
    * @return a sorted set of wal names
@@ -375,8 +378,10 @@ public class ReplicationSourceManager implements ReplicationListener {
       final ReplicationPeerConfig peerConfig, final ReplicationPeer replicationPeer)
           throws IOException {
     RegionServerCoprocessorHost rsServerHost = null;
+    TableDescriptors tableDescriptors = null;
     if (server instanceof HRegionServer) {
       rsServerHost = ((HRegionServer) server).getRegionServerCoprocessorHost();
+      tableDescriptors = ((HRegionServer) server).getTableDescriptors();
     }
     ReplicationSourceInterface src;
     try {
@@ -420,7 +425,7 @@ public class ReplicationSourceManager implements ReplicationListener {
 
     // init replication endpoint
     replicationEndpoint.init(new ReplicationEndpoint.Context(replicationPeer.getConfiguration(),
-      fs, peerConfig, peerId, clusterId, replicationPeer, metrics));
+      fs, peerConfig, peerId, clusterId, replicationPeer, metrics, tableDescriptors));
 
     return src;
   }

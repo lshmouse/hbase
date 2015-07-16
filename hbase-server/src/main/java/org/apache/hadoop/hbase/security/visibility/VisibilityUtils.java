@@ -44,16 +44,15 @@ import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.io.util.StreamUtils;
-import org.apache.hadoop.hbase.ipc.RequestContext;
+import org.apache.hadoop.hbase.ipc.RpcServer;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.MultiUserAuthorizations;
 import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.UserAuthorizations;
 import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.VisibilityLabel;
 import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.VisibilityLabelsRequest;
-import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.security.AccessDeniedException;
 import org.apache.hadoop.hbase.security.User;
-import org.apache.hadoop.hbase.security.access.AccessControlLists;
 import org.apache.hadoop.hbase.security.visibility.expression.ExpressionNode;
 import org.apache.hadoop.hbase.security.visibility.expression.LeafExpressionNode;
 import org.apache.hadoop.hbase.security.visibility.expression.NonLeafExpressionNode;
@@ -61,7 +60,6 @@ import org.apache.hadoop.hbase.security.visibility.expression.Operator;
 import org.apache.hadoop.hbase.util.ByteRange;
 import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.SimpleMutableByteRange;
 import org.apache.hadoop.util.ReflectionUtils;
 
@@ -103,38 +101,6 @@ public class VisibilityUtils {
   }
 
   /**
-   * Get the super users and groups defined in the configuration.
-   * The user running the hbase server is always included.
-   * @param conf
-   * @return Pair of super user list and super group list.
-   * @throws IOException
-   */
-  public static Pair<List<String>, List<String>> getSystemAndSuperUsers(Configuration conf)
-      throws IOException {
-    ArrayList<String> superUsers = new ArrayList<String>();
-    ArrayList<String> superGroups = new ArrayList<String>();
-    User user = User.getCurrent();
-    if (user == null) {
-      throw new IOException("Unable to obtain the current user, "
-          + "authorization checks for internal operations will not work correctly!");
-    }
-    if (LOG.isTraceEnabled()) {
-      LOG.trace("Current user name is " + user.getShortName());
-    }
-    String currentUser = user.getShortName();
-    String[] superUserList = conf.getStrings(AccessControlLists.SUPERUSER_CONF_KEY, new String[0]);
-    for (String name : superUserList) {
-      if (AccessControlLists.isGroupPrincipal(name)) {
-        superGroups.add(AccessControlLists.getGroupName(name));
-      } else {
-        superUsers.add(name);
-      }
-    }
-    superUsers.add(currentUser);
-    return new Pair<List<String>, List<String>>(superUsers, superGroups);
-  }
-
-  /**
    * Creates the user auth data to be written to zookeeper.
    * @param userAuths
    * @return Bytes form of user auths details to be written to zookeeper.
@@ -154,7 +120,7 @@ public class VisibilityUtils {
 
   /**
    * Reads back from the zookeeper. The data read here is of the form written by
-   * writeToZooKeeper(Map<byte[], Integer> entries).
+   * writeToZooKeeper(Map&lt;byte[], Integer&gt; entries).
    * 
    * @param data
    * @return Labels and their ordinal details
@@ -308,7 +274,7 @@ public class VisibilityUtils {
     return false;
   }
 
-  public static Filter createVisibilityLabelFilter(HRegion region, Authorizations authorizations)
+  public static Filter createVisibilityLabelFilter(Region region, Authorizations authorizations)
       throws IOException {
     Map<ByteRange, Integer> cfVsMaxVersions = new HashMap<ByteRange, Integer>();
     for (HColumnDescriptor hcd : region.getTableDesc().getFamilies()) {
@@ -326,8 +292,8 @@ public class VisibilityUtils {
    * @throws IOException When there is IOE in getting the system user (During non-RPC handling).
    */
   public static User getActiveUser() throws IOException {
-    User user = RequestContext.getRequestUser();
-    if (!RequestContext.isInRequestContext()) {
+    User user = RpcServer.getRequestUser();
+    if (user == null) {
       user = User.getCurrent();
     }
     if (LOG.isTraceEnabled()) {

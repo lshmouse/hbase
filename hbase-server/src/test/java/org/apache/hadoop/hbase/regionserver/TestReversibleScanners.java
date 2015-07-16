@@ -34,6 +34,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
@@ -42,8 +43,6 @@ import org.apache.hadoop.hbase.KeepDeletedCells;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
@@ -57,6 +56,8 @@ import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.io.hfile.HFileContext;
 import org.apache.hadoop.hbase.io.hfile.HFileContextBuilder;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.junit.Test;
@@ -253,7 +254,7 @@ public class TestReversibleScanners {
 
     ScanType scanType = ScanType.USER_SCAN;
     ScanInfo scanInfo = new ScanInfo(FAMILYNAME, 0, Integer.MAX_VALUE,
-        Long.MAX_VALUE, KeepDeletedCells.FALSE, 0, KeyValue.COMPARATOR);
+        Long.MAX_VALUE, KeepDeletedCells.FALSE, 0, CellComparator.COMPARATOR);
 
     // Case 1.Test a full reversed scan
     Scan scan = new Scan();
@@ -312,7 +313,7 @@ public class TestReversibleScanners {
     HTableDescriptor htd = new HTableDescriptor(TableName.valueOf("testtable"))
         .addFamily(new HColumnDescriptor(FAMILYNAME))
         .addFamily(new HColumnDescriptor(FAMILYNAME2));
-    HRegion region = TEST_UTIL.createLocalHRegion(htd, null, null);
+    Region region = TEST_UTIL.createLocalHRegion(htd, null, null);
     loadDataToRegion(region, FAMILYNAME2);
 
     // verify row count with forward scan
@@ -484,7 +485,7 @@ public class TestReversibleScanners {
     List<KeyValueScanner> scanners = getScanners(memstore, sf1, sf2, startRow,
         true, readPoint);
     ReversedKeyValueHeap kvHeap = new ReversedKeyValueHeap(scanners,
-        KeyValue.COMPARATOR);
+        CellComparator.COMPARATOR);
     return kvHeap;
   }
 
@@ -615,7 +616,7 @@ public class TestReversibleScanners {
     return nextReadableNum;
   }
 
-  private static void loadDataToRegion(HRegion region, byte[] additionalFamily)
+  private static void loadDataToRegion(Region region, byte[] additionalFamily)
       throws IOException {
     for (int i = 0; i < ROWSIZE; i++) {
       Put put = new Put(ROWS[i]);
@@ -626,7 +627,7 @@ public class TestReversibleScanners {
       }
       region.put(put);
       if (i == ROWSIZE / 3 || i == ROWSIZE * 2 / 3) {
-        region.flushcache();
+        region.flush(true);
       }
     }
   }

@@ -35,7 +35,9 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.DaemonThreadFactory;
+import org.apache.hadoop.hbase.DroppedSnapshotException;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionReplicaUtil;
@@ -49,8 +51,8 @@ import org.apache.hadoop.hbase.procedure.Subprocedure;
 import org.apache.hadoop.hbase.procedure.SubprocedureFactory;
 import org.apache.hadoop.hbase.procedure.ZKProcedureMemberRpcs;
 import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
-import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionServerServices;
 import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.apache.zookeeper.KeeperException;
@@ -160,7 +162,7 @@ public class RegionServerSnapshotManager extends RegionServerProcedureManager {
 
     // check to see if this server is hosting any regions for the snapshots
     // check to see if we have regions for the snapshot
-    List<HRegion> involvedRegions;
+    List<Region> involvedRegions;
     try {
       involvedRegions = getRegionsToSnapshot(snapshot);
     } catch (IOException e1) {
@@ -184,7 +186,7 @@ public class RegionServerSnapshotManager extends RegionServerProcedureManager {
     switch (snapshot.getType()) {
     case FLUSH:
       SnapshotSubprocedurePool taskManager =
-        new SnapshotSubprocedurePool(rss.getServerName().toString(), conf);
+        new SnapshotSubprocedurePool(rss.getServerName().toString(), conf, rss);
       return new FlushSnapshotSubprocedure(member, exnDispatcher, wakeMillis,
           timeoutMillis, involvedRegions, snapshot, taskManager);
     case SKIPFLUSH:
@@ -196,7 +198,7 @@ public class RegionServerSnapshotManager extends RegionServerProcedureManager {
          * To minimized the code change, class name is not changed.
          */
         SnapshotSubprocedurePool taskManager2 =
-            new SnapshotSubprocedurePool(rss.getServerName().toString(), conf);
+            new SnapshotSubprocedurePool(rss.getServerName().toString(), conf, rss);
         return new FlushSnapshotSubprocedure(member, exnDispatcher, wakeMillis,
             timeoutMillis, involvedRegions, snapshot, taskManager2);
 
@@ -220,12 +222,12 @@ public class RegionServerSnapshotManager extends RegionServerProcedureManager {
    *         the given snapshot.
    * @throws IOException
    */
-  private List<HRegion> getRegionsToSnapshot(SnapshotDescription snapshot) throws IOException {
-    List<HRegion> onlineRegions = rss.getOnlineRegions(TableName.valueOf(snapshot.getTable()));
-    Iterator<HRegion> iterator = onlineRegions.iterator();
+  private List<Region> getRegionsToSnapshot(SnapshotDescription snapshot) throws IOException {
+    List<Region> onlineRegions = rss.getOnlineRegions(TableName.valueOf(snapshot.getTable()));
+    Iterator<Region> iterator = onlineRegions.iterator();
     // remove the non-default regions
     while (iterator.hasNext()) {
-      HRegion r = iterator.next();
+      Region r = iterator.next();
       if (!RegionReplicaUtil.isDefaultReplica(r.getRegionInfo())) {
         iterator.remove();
       }
@@ -265,13 +267,15 @@ public class RegionServerSnapshotManager extends RegionServerProcedureManager {
    * operations such as compactions and replication  sinks.
    */
   static class SnapshotSubprocedurePool {
+    private final Abortable abortable;
     private final ExecutorCompletionService<Void> taskPool;
     private final ThreadPoolExecutor executor;
     private volatile boolean stopped;
     private final List<Future<Void>> futures = new ArrayList<Future<Void>>();
     private final String name;
 
-    SnapshotSubprocedurePool(String name, Configuration conf) {
+    SnapshotSubprocedurePool(String name, Configuration conf, Abortable abortable) {
+      this.abortable = abortable;
       // configure the executor service
       long keepAlive = conf.getLong(
         RegionServerSnapshotManager.SNAPSHOT_TIMEOUT_MILLIS_KEY,
@@ -331,9 +335,13 @@ public class RegionServerSnapshotManager extends RegionServerProcedureManager {
         }
         // we are stopped so we can just exit.
       } catch (ExecutionException e) {
-        if (e.getCause() instanceof ForeignException) {
+        Throwable cause = e.getCause();
+        if (cause instanceof ForeignException) {
           LOG.warn("Rethrowing ForeignException from SnapshotSubprocedurePool", e);
           throw (ForeignException)e.getCause();
+        } else if (cause instanceof DroppedSnapshotException) {
+          // we have to abort the region server according to contract of flush
+          abortable.abort("Received DroppedSnapshotException, aborting", cause);
         }
         LOG.warn("Got Exception in SnapshotSubprocedurePool", e);
         throw new ForeignException(name, e.getCause());
@@ -371,7 +379,7 @@ public class RegionServerSnapshotManager extends RegionServerProcedureManager {
       if (this.stopped) return;
 
       this.stopped = true;
-      this.executor.shutdownNow();
+      this.executor.shutdown();
     }
   }
 

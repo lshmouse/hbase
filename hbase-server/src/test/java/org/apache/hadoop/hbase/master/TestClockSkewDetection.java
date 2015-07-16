@@ -25,12 +25,14 @@ import java.net.InetAddress;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.ClockOutOfSyncException;
 import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.RegionServerStartupRequest;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
@@ -93,11 +95,20 @@ public class TestClockSkewDetection {
       @Override
       public void stop(String why) {
       }
+
+      @Override
+      public ChoreService getChoreService() {
+        return null;
+      }
     }, null, false);
 
     LOG.debug("regionServerStartup 1");
     InetAddress ia1 = InetAddress.getLocalHost();
-    sm.regionServerStartup(ia1, 1234, -1, System.currentTimeMillis());
+    RegionServerStartupRequest.Builder request = RegionServerStartupRequest.newBuilder();
+    request.setPort(1234);
+    request.setServerStartCode(-1);
+    request.setServerCurrentTime(System.currentTimeMillis());
+    sm.regionServerStartup(request.build(), ia1);
 
     final Configuration c = HBaseConfiguration.create();
     long maxSkew = c.getLong("hbase.master.maxclockskew", 30000);
@@ -108,7 +119,11 @@ public class TestClockSkewDetection {
       LOG.debug("Test: Master Time > Region Server Time");
       LOG.debug("regionServerStartup 2");
       InetAddress ia2 = InetAddress.getLocalHost();
-      sm.regionServerStartup(ia2, 1235, -1, System.currentTimeMillis() - maxSkew * 2);
+      request = RegionServerStartupRequest.newBuilder();
+      request.setPort(1235);
+      request.setServerStartCode(-1);
+      request.setServerCurrentTime(System.currentTimeMillis() - maxSkew * 2);
+      sm.regionServerStartup(request.build(), ia2);
       fail("HMaster should have thrown a ClockOutOfSyncException but didn't.");
     } catch(ClockOutOfSyncException e) {
       //we want an exception
@@ -120,7 +135,11 @@ public class TestClockSkewDetection {
       LOG.debug("Test: Master Time < Region Server Time");
       LOG.debug("regionServerStartup 3");
       InetAddress ia3 = InetAddress.getLocalHost();
-      sm.regionServerStartup(ia3, 1236, -1, System.currentTimeMillis() + maxSkew * 2);
+      request = RegionServerStartupRequest.newBuilder();
+      request.setPort(1236);
+      request.setServerStartCode(-1);
+      request.setServerCurrentTime(System.currentTimeMillis() + maxSkew * 2);
+      sm.regionServerStartup(request.build(), ia3);
       fail("HMaster should have thrown a ClockOutOfSyncException but didn't.");
     } catch (ClockOutOfSyncException e) {
       // we want an exception
@@ -130,12 +149,20 @@ public class TestClockSkewDetection {
     // make sure values above warning threshold but below max threshold don't kill
     LOG.debug("regionServerStartup 4");
     InetAddress ia4 = InetAddress.getLocalHost();
-    sm.regionServerStartup(ia4, 1237, -1, System.currentTimeMillis() - warningSkew * 2);
+    request = RegionServerStartupRequest.newBuilder();
+    request.setPort(1237);
+    request.setServerStartCode(-1);
+    request.setServerCurrentTime(System.currentTimeMillis() - warningSkew * 2);
+    sm.regionServerStartup(request.build(), ia4);
     
     // make sure values above warning threshold but below max threshold don't kill
     LOG.debug("regionServerStartup 5");
     InetAddress ia5 = InetAddress.getLocalHost();
-    sm.regionServerStartup(ia5, 1238, -1, System.currentTimeMillis() + warningSkew * 2);
+    request = RegionServerStartupRequest.newBuilder();
+    request.setPort(1238);
+    request.setServerStartCode(-1);
+    request.setServerCurrentTime(System.currentTimeMillis() + warningSkew * 2);
+    sm.regionServerStartup(request.build(), ia5);
     
   }
 

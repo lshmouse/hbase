@@ -34,11 +34,13 @@ import java.util.concurrent.ExecutorService;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.ClusterId;
 import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
@@ -49,7 +51,6 @@ import org.apache.hadoop.hbase.client.HTableInterface;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.ipc.BlockingRpcCallback;
 import org.apache.hadoop.hbase.ipc.FifoRpcScheduler;
-import org.apache.hadoop.hbase.ipc.RequestContext;
 import org.apache.hadoop.hbase.ipc.RpcClient;
 import org.apache.hadoop.hbase.ipc.RpcClientFactory;
 import org.apache.hadoop.hbase.ipc.RpcServer;
@@ -100,7 +101,7 @@ public class TestTokenAuthentication {
     System.setProperty("java.security.krb5.realm", "hbase");
     System.setProperty("java.security.krb5.kdc", "blah");
   }
-  private static Log LOG = LogFactory.getLog(TestTokenAuthentication.class);
+  private static final Log LOG = LogFactory.getLog(TestTokenAuthentication.class);
 
   public interface AuthenticationServiceSecurityInfo {}
 
@@ -109,7 +110,7 @@ public class TestTokenAuthentication {
    */
   private static class TokenServer extends TokenProvider
   implements AuthenticationProtos.AuthenticationService.BlockingInterface, Runnable, Server {
-    private static Log LOG = LogFactory.getLog(TokenServer.class);
+    private static final Log LOG = LogFactory.getLog(TokenServer.class);
     private Configuration conf;
     private RpcServerInterface rpcServer;
     private InetSocketAddress isa;
@@ -243,6 +244,11 @@ public class TestTokenAuthentication {
         public ClassLoader getClassLoader() {
           return Thread.currentThread().getContextClassLoader();
         }
+
+        @Override
+        public HRegionInfo getRegionInfo() {
+          return null;
+        }
       });
 
       started = true;
@@ -288,7 +294,7 @@ public class TestTokenAuthentication {
     public AuthenticationProtos.GetAuthenticationTokenResponse getAuthenticationToken(
         RpcController controller, AuthenticationProtos.GetAuthenticationTokenRequest request)
       throws ServiceException {
-      LOG.debug("Authentication token request from "+RequestContext.getRequestUserName());
+      LOG.debug("Authentication token request from " + RpcServer.getRequestUserName());
       // ignore passed in controller -- it's always null
       ServerRpcController serverController = new ServerRpcController();
       BlockingRpcCallback<AuthenticationProtos.GetAuthenticationTokenResponse> callback =
@@ -306,7 +312,7 @@ public class TestTokenAuthentication {
     public AuthenticationProtos.WhoAmIResponse whoAmI(
         RpcController controller, AuthenticationProtos.WhoAmIRequest request)
       throws ServiceException {
-      LOG.debug("whoAmI() request from "+RequestContext.getRequestUserName());
+      LOG.debug("whoAmI() request from " + RpcServer.getRequestUserName());
       // ignore passed in controller -- it's always null
       ServerRpcController serverController = new ServerRpcController();
       BlockingRpcCallback<AuthenticationProtos.WhoAmIResponse> callback =
@@ -318,6 +324,11 @@ public class TestTokenAuthentication {
       } catch (IOException ioe) {
         throw new ServiceException(ioe);
       }
+    }
+
+    @Override
+    public ChoreService getChoreService() {
+      return null;
     }
   }
 

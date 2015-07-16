@@ -33,18 +33,19 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.Stoppable;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.master.cleaner.HFileCleaner;
 import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
 import org.apache.hadoop.hbase.regionserver.HRegion;
-import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
+import org.apache.hadoop.hbase.regionserver.Region;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveTestingUtil;
@@ -77,7 +78,7 @@ public class TestHFileArchiving {
     UTIL.startMiniCluster();
 
     // We don't want the cleaner to remove files. The tests do that.
-    UTIL.getMiniHBaseCluster().getMaster().getHFileCleaner().interrupt();
+    UTIL.getMiniHBaseCluster().getMaster().getHFileCleaner().cancel(true);
   }
 
   private static void setupConf(Configuration conf) {
@@ -230,7 +231,7 @@ public class TestHFileArchiving {
     List<HRegion> servingRegions = UTIL.getHBaseCluster().getRegions(TABLE_NAME);
     // make sure we only have 1 region serving this table
     assertEquals(1, servingRegions.size());
-    HRegion region = servingRegions.get(0);
+    Region region = servingRegions.get(0);
 
     // get the parent RS and monitor
     HRegionServer hrs = UTIL.getRSForFirstRegionInTable(TABLE_NAME);
@@ -241,7 +242,7 @@ public class TestHFileArchiving {
     UTIL.loadRegion(region, TEST_FAM);
 
     // get the hfiles in the region
-    List<HRegion> regions = hrs.getOnlineRegions(TABLE_NAME);
+    List<Region> regions = hrs.getOnlineRegions(TABLE_NAME);
     assertEquals("More that 1 region for test table.", 1, regions.size());
 
     region = regions.get(0);
@@ -256,7 +257,8 @@ public class TestHFileArchiving {
     clearArchiveDirectory();
 
     // then get the current store files
-    List<String> storeFiles = getRegionStoreFiles(region);
+    byte[][]columns = region.getTableDesc().getFamiliesKeys().toArray(new byte[0][]);
+    List<String> storeFiles = region.getStoreFileList(columns);
 
     // then delete the table so the hfiles get archived
     UTIL.deleteTable(TABLE_NAME);
@@ -304,12 +306,12 @@ public class TestHFileArchiving {
   public void testArchiveOnTableFamilyDelete() throws Exception {
     TableName TABLE_NAME =
         TableName.valueOf("testArchiveOnTableFamilyDelete");
-    UTIL.createTable(TABLE_NAME, TEST_FAM);
+    UTIL.createTable(TABLE_NAME, new byte[][] {TEST_FAM, Bytes.toBytes("fam2")});
 
     List<HRegion> servingRegions = UTIL.getHBaseCluster().getRegions(TABLE_NAME);
     // make sure we only have 1 region serving this table
     assertEquals(1, servingRegions.size());
-    HRegion region = servingRegions.get(0);
+    Region region = servingRegions.get(0);
 
     // get the parent RS and monitor
     HRegionServer hrs = UTIL.getRSForFirstRegionInTable(TABLE_NAME);
@@ -320,7 +322,7 @@ public class TestHFileArchiving {
     UTIL.loadRegion(region, TEST_FAM);
 
     // get the hfiles in the region
-    List<HRegion> regions = hrs.getOnlineRegions(TABLE_NAME);
+    List<Region> regions = hrs.getOnlineRegions(TABLE_NAME);
     assertEquals("More that 1 region for test table.", 1, regions.size());
 
     region = regions.get(0);
@@ -335,10 +337,11 @@ public class TestHFileArchiving {
     clearArchiveDirectory();
 
     // then get the current store files
-    List<String> storeFiles = getRegionStoreFiles(region);
+    byte[][]columns = region.getTableDesc().getFamiliesKeys().toArray(new byte[0][]);
+    List<String> storeFiles = region.getStoreFileList(columns);
 
     // then delete the table so the hfiles get archived
-    UTIL.getHBaseAdmin().deleteColumn(TABLE_NAME, TEST_FAM);
+    UTIL.getHBaseAdmin().deleteColumnFamily(TABLE_NAME, TEST_FAM);
 
     assertArchiveFiles(fs, storeFiles, 30000);
 
@@ -351,6 +354,7 @@ public class TestHFileArchiving {
   @Test
   public void testCleaningRace() throws Exception {
     final long TEST_TIME = 20 * 1000;
+    final ChoreService choreService = new ChoreService("TEST_SERVER_NAME");
 
     Configuration conf = UTIL.getMiniHBaseCluster().getMaster().getConfiguration();
     Path rootDir = UTIL.getDataTestDirOnTestFS("testCleaningRace");
@@ -369,7 +373,7 @@ public class TestHFileArchiving {
     // The cleaner should be looping without long pauses to reproduce the race condition.
     HFileCleaner cleaner = new HFileCleaner(1, stoppable, conf, fs, archiveDir);
     try {
-      cleaner.start();
+      choreService.scheduleChore(cleaner);
 
       // Keep creating/archiving new files while the cleaner is running in the other thread
       long startTime = System.currentTimeMillis();
@@ -404,7 +408,8 @@ public class TestHFileArchiving {
       }
     } finally {
       stoppable.stop("test end");
-      cleaner.join();
+      cleaner.cancel(true);
+      choreService.shutdown();
       fs.delete(rootDir, true);
     }
   }
@@ -445,20 +450,5 @@ public class TestHFileArchiving {
       } else fileNames.add(file.getPath().getName());
     }
     return fileNames;
-  }
-
-  private List<String> getRegionStoreFiles(final HRegion region) throws IOException {
-    Path regionDir = region.getRegionFileSystem().getRegionDir();
-    FileSystem fs = region.getRegionFileSystem().getFileSystem();
-    List<String> storeFiles = getAllFileNames(fs, regionDir);
-    // remove all the non-storefile named files for the region
-    for (int i = 0; i < storeFiles.size(); i++) {
-      String file = storeFiles.get(i);
-      if (file.contains(HRegionFileSystem.REGION_INFO_FILE) || file.contains("wal")) {
-        storeFiles.remove(i--);
-      }
-    }
-    storeFiles.remove(HRegionFileSystem.REGION_INFO_FILE);
-    return storeFiles;
   }
 }

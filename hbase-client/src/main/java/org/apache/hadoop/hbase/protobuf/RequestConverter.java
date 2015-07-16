@@ -60,6 +60,7 @@ import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.SplitRegionRequest
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.StopServerRequest;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.UpdateFavoredNodesRequest;
 import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.UpdateFavoredNodesRequest.RegionUpdateInfo;
+import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.WarmupRegionRequest;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.BulkLoadHFileRequest;
 import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.BulkLoadHFileRequest.FamilyPath;
@@ -91,6 +92,7 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.GetSchemaAlterSta
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.GetTableDescriptorsRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.GetTableNamesRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.GetTableStateRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsBalancerEnabledRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsCatalogJanitorEnabledRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.IsMasterRunningRequest;
 import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.ModifyColumnRequest;
@@ -104,6 +106,7 @@ import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.UnassignRegionReq
 import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.GetLastFlushedSequenceIdRequest;
 import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.Pair;
 
 import com.google.protobuf.ByteString;
@@ -476,9 +479,8 @@ public final class RequestConverter {
    * @return a scan request
    * @throws IOException
    */
-  public static ScanRequest buildScanRequest(final byte[] regionName,
-      final Scan scan, final int numberOfRows,
-        final boolean closeScanner) throws IOException {
+  public static ScanRequest buildScanRequest(final byte[] regionName, final Scan scan,
+      final int numberOfRows, final boolean closeScanner) throws IOException {
     ScanRequest.Builder builder = ScanRequest.newBuilder();
     RegionSpecifier region = buildRegionSpecifier(
       RegionSpecifierType.REGION_NAME, regionName);
@@ -486,6 +488,9 @@ public final class RequestConverter {
     builder.setCloseScanner(closeScanner);
     builder.setRegion(region);
     builder.setScan(ProtobufUtil.toScan(scan));
+    builder.setClientHandlesPartials(true);
+    builder.setClientHandlesHeartbeats(true);
+    builder.setTrackScanMetrics(scan != null && scan.isScanMetricsEnabled());
     return builder.build();
   }
 
@@ -497,12 +502,15 @@ public final class RequestConverter {
    * @param closeScanner
    * @return a scan request
    */
-  public static ScanRequest buildScanRequest(final long scannerId,
-      final int numberOfRows, final boolean closeScanner) {
+  public static ScanRequest buildScanRequest(final long scannerId, final int numberOfRows,
+      final boolean closeScanner, final boolean trackMetrics) {
     ScanRequest.Builder builder = ScanRequest.newBuilder();
     builder.setNumberOfRows(numberOfRows);
     builder.setCloseScanner(closeScanner);
     builder.setScannerId(scannerId);
+    builder.setClientHandlesPartials(true);
+    builder.setClientHandlesHeartbeats(true);
+    builder.setTrackScanMetrics(trackMetrics);
     return builder.build();
   }
 
@@ -516,12 +524,15 @@ public final class RequestConverter {
    * @return a scan request
    */
   public static ScanRequest buildScanRequest(final long scannerId, final int numberOfRows,
-      final boolean closeScanner, final long nextCallSeq) {
+      final boolean closeScanner, final long nextCallSeq, final boolean trackMetrics) {
     ScanRequest.Builder builder = ScanRequest.newBuilder();
     builder.setNumberOfRows(numberOfRows);
     builder.setCloseScanner(closeScanner);
     builder.setScannerId(scannerId);
     builder.setNextCallSeq(nextCallSeq);
+    builder.setClientHandlesPartials(true);
+    builder.setClientHandlesHeartbeats(true);
+    builder.setTrackScanMetrics(trackMetrics);
     return builder.build();
   }
 
@@ -739,10 +750,22 @@ public final class RequestConverter {
   */
  public static FlushRegionRequest
      buildFlushRegionRequest(final byte[] regionName) {
+   return buildFlushRegionRequest(regionName, false);
+ }
+
+ /**
+  * Create a protocol buffer FlushRegionRequest for a given region name
+  *
+  * @param regionName the name of the region to get info
+  * @return a protocol buffer FlushRegionRequest
+  */
+ public static FlushRegionRequest
+     buildFlushRegionRequest(final byte[] regionName, boolean writeFlushWALMarker) {
    FlushRegionRequest.Builder builder = FlushRegionRequest.newBuilder();
    RegionSpecifier region = buildRegionSpecifier(
      RegionSpecifierType.REGION_NAME, regionName);
    builder.setRegion(region);
+   builder.setWriteFlushWalMarker(writeFlushWALMarker);
    return builder.build();
  }
 
@@ -765,6 +788,8 @@ public final class RequestConverter {
    if (server != null) {
      builder.setServerStartCode(server.getStartcode());
    }
+   // send the master's wall clock time as well, so that the RS can refer to it
+   builder.setMasterSystemTime(EnvironmentEdgeManager.currentTime());
    return builder.build();
  }
 
@@ -786,6 +811,7 @@ public final class RequestConverter {
    if (server != null) {
      builder.setServerStartCode(server.getStartcode());
    }
+   builder.setMasterSystemTime(EnvironmentEdgeManager.currentTime());
    return builder.build();
  }
 
@@ -834,6 +860,16 @@ public final class RequestConverter {
     return builder.build();
   }
 
+  /**
+   *  Create a WarmupRegionRequest for a given region name
+   *
+   *  @param regionInfo Region we are warming up
+   */
+  public static WarmupRegionRequest buildWarmupRegionRequest(final HRegionInfo regionInfo) {
+    WarmupRegionRequest.Builder builder = WarmupRegionRequest.newBuilder();
+    builder.setRegionInfo(HRegionInfo.convert(regionInfo));
+    return builder.build();
+  }
  /**
   * Create a CloseRegionRequest for a given encoded region name
   *
@@ -889,6 +925,8 @@ public final class RequestConverter {
     builder.setRegionA(regionASpecifier);
     builder.setRegionB(regionBSpecifier);
     builder.setForcible(forcible);
+    // send the master's wall clock time as well, so that the RS can refer to it
+    builder.setMasterSystemTime(EnvironmentEdgeManager.currentTime());
     return builder.build();
   }
 
@@ -1003,10 +1041,15 @@ public final class RequestConverter {
    * @return an AddColumnRequest
    */
   public static AddColumnRequest buildAddColumnRequest(
-      final TableName tableName, final HColumnDescriptor column) {
+      final TableName tableName,
+      final HColumnDescriptor column,
+      final long nonceGroup,
+      final long nonce) {
     AddColumnRequest.Builder builder = AddColumnRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName(tableName));
     builder.setColumnFamilies(column.convert());
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1018,10 +1061,15 @@ public final class RequestConverter {
    * @return a DeleteColumnRequest
    */
   public static DeleteColumnRequest buildDeleteColumnRequest(
-      final TableName tableName, final byte [] columnName) {
+      final TableName tableName,
+      final byte [] columnName,
+      final long nonceGroup,
+      final long nonce) {
     DeleteColumnRequest.Builder builder = DeleteColumnRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName((tableName)));
     builder.setColumnName(ByteStringer.wrap(columnName));
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1033,10 +1081,15 @@ public final class RequestConverter {
    * @return an ModifyColumnRequest
    */
   public static ModifyColumnRequest buildModifyColumnRequest(
-      final TableName tableName, final HColumnDescriptor column) {
+      final TableName tableName,
+      final HColumnDescriptor column,
+      final long nonceGroup,
+      final long nonce) {
     ModifyColumnRequest.Builder builder = ModifyColumnRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName((tableName)));
     builder.setColumnFamilies(column.convert());
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1118,9 +1171,14 @@ public final class RequestConverter {
    * @param tableName
    * @return a DeleteTableRequest
    */
-  public static DeleteTableRequest buildDeleteTableRequest(final TableName tableName) {
+  public static DeleteTableRequest buildDeleteTableRequest(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) {
     DeleteTableRequest.Builder builder = DeleteTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName(tableName));
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1131,11 +1189,16 @@ public final class RequestConverter {
    * @param preserveSplits True if the splits should be preserved
    * @return a TruncateTableRequest
    */
-  public static TruncateTableRequest buildTruncateTableRequest(final TableName tableName,
-        boolean preserveSplits) {
+  public static TruncateTableRequest buildTruncateTableRequest(
+      final TableName tableName,
+      final boolean preserveSplits,
+      final long nonceGroup,
+      final long nonce) {
     TruncateTableRequest.Builder builder = TruncateTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName(tableName));
     builder.setPreserveSplits(preserveSplits);
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1145,9 +1208,14 @@ public final class RequestConverter {
    * @param tableName
    * @return an EnableTableRequest
    */
-  public static EnableTableRequest buildEnableTableRequest(final TableName tableName) {
+  public static EnableTableRequest buildEnableTableRequest(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) {
     EnableTableRequest.Builder builder = EnableTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName(tableName));
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1157,9 +1225,14 @@ public final class RequestConverter {
    * @param tableName
    * @return a DisableTableRequest
    */
-  public static DisableTableRequest buildDisableTableRequest(final TableName tableName) {
+  public static DisableTableRequest buildDisableTableRequest(
+      final TableName tableName,
+      final long nonceGroup,
+      final long nonce) {
     DisableTableRequest.Builder builder = DisableTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName((tableName)));
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1171,7 +1244,10 @@ public final class RequestConverter {
    * @return a CreateTableRequest
    */
   public static CreateTableRequest buildCreateTableRequest(
-      final HTableDescriptor hTableDesc, final byte [][] splitKeys) {
+      final HTableDescriptor hTableDesc,
+      final byte [][] splitKeys,
+      final long nonceGroup,
+      final long nonce) {
     CreateTableRequest.Builder builder = CreateTableRequest.newBuilder();
     builder.setTableSchema(hTableDesc.convert());
     if (splitKeys != null) {
@@ -1179,6 +1255,8 @@ public final class RequestConverter {
         builder.addSplitKeys(ByteStringer.wrap(splitKey));
       }
     }
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1191,10 +1269,15 @@ public final class RequestConverter {
    * @return a ModifyTableRequest
    */
   public static ModifyTableRequest buildModifyTableRequest(
-      final TableName tableName, final HTableDescriptor hTableDesc) {
+      final TableName tableName,
+      final HTableDescriptor hTableDesc,
+      final long nonceGroup,
+      final long nonce) {
     ModifyTableRequest.Builder builder = ModifyTableRequest.newBuilder();
     builder.setTableName(ProtobufUtil.toProtoTableName((tableName)));
     builder.setTableSchema(hTableDesc.convert());
+    builder.setNonceGroup(nonceGroup);
+    builder.setNonce(nonce);
     return builder.build();
   }
 
@@ -1309,8 +1392,19 @@ public final class RequestConverter {
    * @param synchronous
    * @return a SetBalancerRunningRequest
    */
-  public static SetBalancerRunningRequest buildSetBalancerRunningRequest(boolean on, boolean synchronous) {
+  public static SetBalancerRunningRequest buildSetBalancerRunningRequest(
+      boolean on,
+      boolean synchronous) {
     return SetBalancerRunningRequest.newBuilder().setOn(on).setSynchronous(synchronous).build();
+  }
+
+  /**
+   * Creates a protocol buffer IsBalancerEnabledRequest
+   *
+   * @return a IsBalancerEnabledRequest
+   */
+  public static IsBalancerEnabledRequest buildIsBalancerEnabledRequest() {
+    return IsBalancerEnabledRequest.newBuilder().build();
   }
 
   /**

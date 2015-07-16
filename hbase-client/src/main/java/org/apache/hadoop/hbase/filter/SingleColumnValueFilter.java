@@ -22,9 +22,8 @@ package org.apache.hadoop.hbase.filter;
 import java.io.IOException;
 import java.util.ArrayList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
@@ -71,7 +70,6 @@ import com.google.protobuf.InvalidProtocolBufferException;
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public class SingleColumnValueFilter extends FilterBase {
-  static final Log LOG = LogFactory.getLog(SingleColumnValueFilter.class);
 
   protected byte [] columnFamily;
   protected byte [] columnQualifier;
@@ -169,6 +167,12 @@ public class SingleColumnValueFilter extends FilterBase {
   }
 
   @Override
+  public boolean filterRowKey(Cell cell) throws IOException {
+    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
+    return false;
+  }
+
+  @Override
   public ReturnCode filterKeyValue(Cell c) {
     // System.out.println("REMOVE KEY=" + keyValue.toString() + ", value=" + Bytes.toString(keyValue.getValue()));
     if (this.matchedColumn) {
@@ -182,17 +186,15 @@ public class SingleColumnValueFilter extends FilterBase {
       return ReturnCode.INCLUDE;
     }
     foundColumn = true;
-    if (filterColumnValue(c.getValueArray(),
-        c.getValueOffset(), c.getValueLength())) {
+    if (filterColumnValue(c)) {
       return this.latestVersionOnly? ReturnCode.NEXT_ROW: ReturnCode.INCLUDE;
     }
     this.matchedColumn = true;
     return ReturnCode.INCLUDE;
   }
 
-  private boolean filterColumnValue(final byte [] data, final int offset,
-      final int length) {
-    int compareResult = this.comparator.compareTo(data, offset, length);
+  private boolean filterColumnValue(final Cell cell) {
+    int compareResult = CellComparator.compareValue(cell, this.comparator);
     switch (this.compareOp) {
     case LESS:
       return compareResult <= 0;

@@ -37,18 +37,18 @@ import java.util.concurrent.Future;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.Chore;
-import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.NotServingRegionException;
+import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotDisabledException;
 import org.apache.hadoop.hbase.Waiter;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.TableState;
 import org.apache.hadoop.hbase.coprocessor.BaseMasterObserver;
 import org.apache.hadoop.hbase.coprocessor.MasterCoprocessorEnvironment;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
@@ -103,52 +103,21 @@ public class TestTableLockManager {
     TEST_UTIL.shutdownMiniCluster();
   }
 
-  @Test(timeout = 600000)
-  public void testLockTimeoutException() throws Exception {
-    Configuration conf = TEST_UTIL.getConfiguration();
-    conf.setInt(TableLockManager.TABLE_WRITE_LOCK_TIMEOUT_MS, 3000);
-    prepareMiniCluster();
-    HMaster master = TEST_UTIL.getHBaseCluster().getMaster();
-    master.getMasterCoprocessorHost().load(TestLockTimeoutExceptionMasterObserver.class,
-        0, TEST_UTIL.getConfiguration());
-
-    ExecutorService executor = Executors.newSingleThreadExecutor();
-    Future<Object> shouldFinish = executor.submit(new Callable<Object>() {
-      @Override
-      public Object call() throws Exception {
-        Admin admin = TEST_UTIL.getHBaseAdmin();
-        admin.deleteColumn(TABLE_NAME, FAMILY);
-        return null;
-      }
-    });
-
-    deleteColumn.await();
-
-    try {
-      Admin admin = TEST_UTIL.getHBaseAdmin();
-      admin.addColumn(TABLE_NAME, new HColumnDescriptor(NEW_FAMILY));
-      fail("Was expecting TableLockTimeoutException");
-    } catch (LockTimeoutException ex) {
-      //expected
-    }
-    shouldFinish.get();
-  }
-
   public static class TestLockTimeoutExceptionMasterObserver extends BaseMasterObserver {
     @Override
-    public void preDeleteColumnHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
-        TableName tableName, byte[] c) throws IOException {
+    public void preDeleteColumnFamilyHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, byte[] columnFamily) throws IOException {
       deleteColumn.countDown();
     }
     @Override
-    public void postDeleteColumnHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
-        TableName tableName, byte[] c) throws IOException {
+    public void postDeleteColumnFamilyHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, byte[] columnFamily) throws IOException {
       Threads.sleep(10000);
     }
 
     @Override
-    public void preAddColumnHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
-        TableName tableName, HColumnDescriptor column) throws IOException {
+    public void preAddColumnFamilyHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
       fail("Add column should have timeouted out for acquiring the table lock");
     }
   }
@@ -169,7 +138,7 @@ public class TestTableLockManager {
       @Override
       public Object call() throws Exception {
         Admin admin = TEST_UTIL.getHBaseAdmin();
-        admin.addColumn(TABLE_NAME, new HColumnDescriptor(NEW_FAMILY));
+        admin.addColumnFamily(TABLE_NAME, new HColumnDescriptor(NEW_FAMILY));
         LOG.info("Added new column family");
         HTableDescriptor tableDesc = admin.getTableDescriptor(TABLE_NAME);
         assertTrue(tableDesc.getFamiliesKeys().contains(NEW_FAMILY));
@@ -201,15 +170,15 @@ public class TestTableLockManager {
 
   public static class TestAlterAndDisableMasterObserver extends BaseMasterObserver {
     @Override
-    public void preAddColumnHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
-        TableName tableName, HColumnDescriptor column) throws IOException {
+    public void preAddColumnFamilyHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
       LOG.debug("addColumn called");
       addColumn.countDown();
     }
 
     @Override
-    public void postAddColumnHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
-        TableName tableName, HColumnDescriptor column) throws IOException {
+    public void postAddColumnFamilyHandler(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        TableName tableName, HColumnDescriptor columnFamily) throws IOException {
       Threads.sleep(6000);
       try {
         ctx.getEnvironment().getMasterServices().checkTableModifiable(tableName);
@@ -346,9 +315,10 @@ public class TestTableLockManager {
 
     int familyValues = admin.getTableDescriptor(tableName).getFamily(family).getValues().size();
     StoppableImplementation stopper = new StoppableImplementation();
+    final ChoreService choreService = new ChoreService("TEST_SERVER_NAME");
 
     //alter table every 10 sec
-    Chore alterThread = new Chore("Alter Chore", 10000, stopper) {
+    ScheduledChore alterThread = new ScheduledChore("Alter Chore", stopper, 10000) {
       @Override
       protected void chore() {
         Random random = new Random();
@@ -367,13 +337,13 @@ public class TestTableLockManager {
     };
 
     //split table every 5 sec
-    Chore splitThread = new Chore("Split thread", 5000, stopper) {
+    ScheduledChore splitThread = new ScheduledChore("Split thread", stopper, 5000) {
       @Override
       public void chore() {
         try {
           HRegion region = TEST_UTIL.getSplittableRegion(tableName, -1);
           if (region != null) {
-            byte[] regionName = region.getRegionName();
+            byte[] regionName = region.getRegionInfo().getRegionName();
             admin.flushRegion(regionName);
             admin.compactRegion(regionName);
             admin.splitRegion(regionName);
@@ -392,8 +362,8 @@ public class TestTableLockManager {
       }
     };
 
-    alterThread.start();
-    splitThread.start();
+    choreService.scheduleChore(alterThread);
+    choreService.scheduleChore(splitThread);
     TEST_UTIL.waitTableEnabled(tableName);
     while (true) {
       List<HRegionInfo> regions = admin.getTableRegions(tableName);
@@ -424,6 +394,7 @@ public class TestTableLockManager {
     }
 
     admin.close();
+    choreService.shutdown();
   }
 
 }

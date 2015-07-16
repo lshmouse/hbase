@@ -23,7 +23,6 @@ import java.io.OutputStream;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
@@ -65,7 +64,8 @@ public class KeyValueCodec implements Codec {
     }
 
     protected Cell parseCell() throws IOException {
-      return KeyValue.iscreate(in);
+      // No tags here
+      return KeyValueUtil.iscreate(in, false);
     }
   }
 

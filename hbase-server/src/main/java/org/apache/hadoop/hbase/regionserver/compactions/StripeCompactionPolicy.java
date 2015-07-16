@@ -248,7 +248,7 @@ public class StripeCompactionPolicy extends CompactionPolicy {
       req = new SplitStripeCompactionRequest(
           filesToCompact, si.getStartRow(bqIndex), si.getEndRow(bqIndex), targetCount, targetKvs);
     }
-    if (canDropDeletesWithoutL0 || includeL0) {
+    if (hasAllFiles && (canDropDeletesWithoutL0 || includeL0)) {
       req.setMajorRange(si.getStartRow(bqIndex), si.getEndRow(bqIndex));
     }
     req.getRequest().setOffPeak(isOffpeak);
@@ -396,7 +396,8 @@ public class StripeCompactionPolicy extends CompactionPolicy {
      * @param compactor Compactor.
      * @return result of compact(...)
      */
-    public abstract List<Path> execute(StripeCompactor compactor) throws IOException;
+    public abstract List<Path> execute(StripeCompactor compactor,
+        CompactionThroughputController throughputController) throws IOException;
 
     public StripeCompactionRequest(CompactionRequest request) {
       this.request = request;
@@ -447,9 +448,10 @@ public class StripeCompactionPolicy extends CompactionPolicy {
     }
 
     @Override
-    public List<Path> execute(StripeCompactor compactor) throws IOException {
-      return compactor.compact(
-          this.request, this.targetBoundaries, this.majorRangeFromRow, this.majorRangeToRow);
+    public List<Path> execute(StripeCompactor compactor,
+        CompactionThroughputController throughputController) throws IOException {
+      return compactor.compact(this.request, this.targetBoundaries, this.majorRangeFromRow,
+        this.majorRangeToRow, throughputController);
     }
   }
 
@@ -497,9 +499,10 @@ public class StripeCompactionPolicy extends CompactionPolicy {
     }
 
     @Override
-    public List<Path> execute(StripeCompactor compactor) throws IOException {
-      return compactor.compact(this.request, this.targetCount, this.targetKvs,
-          this.startRow, this.endRow, this.majorRangeFromRow, this.majorRangeToRow);
+    public List<Path> execute(StripeCompactor compactor,
+        CompactionThroughputController throughputController) throws IOException {
+      return compactor.compact(this.request, this.targetCount, this.targetKvs, this.startRow,
+        this.endRow, this.majorRangeFromRow, this.majorRangeToRow, throughputController);
     }
 
     /** Set major range of the compaction to the entire compaction range.

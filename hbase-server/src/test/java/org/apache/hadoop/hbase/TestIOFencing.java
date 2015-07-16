@@ -40,10 +40,12 @@ import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.HStore;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionServerServices;
 import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
+import org.apache.hadoop.hbase.regionserver.compactions.CompactionThroughputController;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.regionserver.wal.WALUtil;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
@@ -75,7 +77,7 @@ import com.google.common.collect.Lists;
  */
 @Category({MiscTests.class, MediumTests.class})
 public class TestIOFencing {
-  static final Log LOG = LogFactory.getLog(TestIOFencing.class);
+  private static final Log LOG = LogFactory.getLog(TestIOFencing.class);
   static {
     // Uncomment the following lines if more verbosity is needed for
     // debugging (see HBASE-12285 for details).
@@ -117,14 +119,17 @@ public class TestIOFencing {
         throw new IOException(ex);
       }
     }
+
     @Override
-    public boolean compact(CompactionContext compaction, Store store) throws IOException {
+    public boolean compact(CompactionContext compaction, Store store,
+        CompactionThroughputController throughputController) throws IOException {
       try {
-        return super.compact(compaction, store);
+        return super.compact(compaction, store, throughputController);
       } finally {
         compactCount++;
       }
     }
+
     public int countStoreFiles() {
       int count = 0;
       for (Store store : stores.values()) {
@@ -286,13 +291,14 @@ public class TestIOFencing {
       long startWaitTime = System.currentTimeMillis();
       while (compactingRegion.getEarliestFlushTimeForAllStores() <= lastFlushTime ||
           compactingRegion.countStoreFiles() <= 1) {
-        LOG.info("Waiting for the region to flush " + compactingRegion.getRegionNameAsString());
+        LOG.info("Waiting for the region to flush " +
+          compactingRegion.getRegionInfo().getRegionNameAsString());
         Thread.sleep(1000);
         assertTrue("Timed out waiting for the region to flush",
           System.currentTimeMillis() - startWaitTime < 30000);
       }
       assertTrue(compactingRegion.countStoreFiles() > 1);
-      final byte REGION_NAME[] = compactingRegion.getRegionName();
+      final byte REGION_NAME[] = compactingRegion.getRegionInfo().getRegionName();
       LOG.info("Asking for compaction");
       ((HBaseAdmin)admin).majorCompact(TABLE_NAME.getName());
       LOG.info("Waiting for compaction to be about to start");
@@ -310,7 +316,7 @@ public class TestIOFencing {
       Waiter.waitFor(c, 60000, new Waiter.Predicate<Exception>() {
         @Override
         public boolean evaluate() throws Exception {
-          HRegion newRegion = newServer.getOnlineRegion(REGION_NAME);
+          Region newRegion = newServer.getOnlineRegion(REGION_NAME);
           return newRegion != null && !newRegion.isRecovering();
         }
       });

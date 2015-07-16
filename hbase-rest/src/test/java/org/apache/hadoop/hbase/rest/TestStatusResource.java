@@ -30,7 +30,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.rest.client.Client;
 import org.apache.hadoop.hbase.rest.client.Cluster;
 import org.apache.hadoop.hbase.rest.client.Response;
@@ -48,7 +47,7 @@ import org.junit.experimental.categories.Category;
 
 @Category({RestTests.class, MediumTests.class})
 public class TestStatusResource {
-  public static Log LOG = LogFactory.getLog(TestStatusResource.class);
+  private static final Log LOG = LogFactory.getLog(TestStatusResource.class);
 
   private static final byte[] META_REGION_NAME = Bytes.toBytes(TableName.META_TABLE_NAME + ",,1");
 
@@ -85,8 +84,8 @@ public class TestStatusResource {
   public static void setUpBeforeClass() throws Exception {
     conf = TEST_UTIL.getConfiguration();
     TEST_UTIL.startMiniCluster(1, 1);
-    TEST_UTIL.createTable(Bytes.toBytes("TestStatusResource"), Bytes.toBytes("D"));
-    TEST_UTIL.createTable(Bytes.toBytes("TestStatusResource2"), Bytes.toBytes("D"));
+    TEST_UTIL.createTable(TableName.valueOf("TestStatusResource"), Bytes.toBytes("D"));
+    TEST_UTIL.createTable(TableName.valueOf("TestStatusResource2"), Bytes.toBytes("D"));
     REST_TEST_UTIL.startServletContainer(conf);
     Cluster cluster = new Cluster();
     cluster.add("localhost", REST_TEST_UTIL.getServletPort());

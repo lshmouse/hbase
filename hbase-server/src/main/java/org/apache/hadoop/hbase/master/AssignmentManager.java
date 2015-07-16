@@ -46,6 +46,7 @@ import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.CoordinatedStateException;
 import org.apache.hadoop.hbase.HBaseIOException;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
@@ -54,7 +55,6 @@ import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.NotServingRegionException;
 import org.apache.hadoop.hbase.RegionLocations;
-import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
@@ -74,7 +74,9 @@ import org.apache.hadoop.hbase.master.handler.DisableTableHandler;
 import org.apache.hadoop.hbase.master.handler.EnableTableHandler;
 import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.RegionStateTransition;
 import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.RegionStateTransition.TransitionCode;
+import org.apache.hadoop.hbase.quotas.RegionStateListener;
 import org.apache.hadoop.hbase.regionserver.RegionOpeningState;
+import org.apache.hadoop.hbase.regionserver.RegionServerAbortedException;
 import org.apache.hadoop.hbase.regionserver.RegionServerStoppedException;
 import org.apache.hadoop.hbase.wal.DefaultWALProvider;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
@@ -85,6 +87,7 @@ import org.apache.hadoop.hbase.util.PairOfSameType;
 import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
 import org.apache.hadoop.ipc.RemoteException;
+import org.apache.hadoop.util.StringUtils;
 import org.apache.zookeeper.KeeperException;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -97,7 +100,7 @@ import com.google.common.annotations.VisibleForTesting;
 public class AssignmentManager {
   private static final Log LOG = LogFactory.getLog(AssignmentManager.class);
 
-  protected final Server server;
+  protected final MasterServices server;
 
   private ServerManager serverManager;
 
@@ -128,8 +131,8 @@ public class AssignmentManager {
   private final int maximumAttempts;
 
   /**
-   * The sleep time for which the assignment will wait before retrying in case of hbase:meta assignment
-   * failure due to lack of availability of region plan or bad region plan
+   * The sleep time for which the assignment will wait before retrying in case of
+   * hbase:meta assignment failure due to lack of availability of region plan or bad region plan
    */
   private final long sleepTimeBeforeRetryingMetaAssignment;
 
@@ -155,6 +158,7 @@ public class AssignmentManager {
   // bulk assigning may be not as efficient.
   private final int bulkAssignThresholdRegions;
   private final int bulkAssignThresholdServers;
+  private final int bulkPerRegionOpenTimeGuesstimate;
 
   // Should bulk assignment wait till all regions are assigned,
   // or it is timed out?  This is useful to measure bulk assignment
@@ -194,6 +198,8 @@ public class AssignmentManager {
   /** Listeners that are called on assignment events. */
   private List<AssignmentListener> listeners = new CopyOnWriteArrayList<AssignmentListener>();
 
+  private RegionStateListener regionStateListener;
+
   /**
    * Constructs a new assignment manager.
    *
@@ -205,7 +211,7 @@ public class AssignmentManager {
    * @param tableLockManager TableLock manager
    * @throws IOException
    */
-  public AssignmentManager(Server server, ServerManager serverManager,
+  public AssignmentManager(MasterServices server, ServerManager serverManager,
       final LoadBalancer balancer,
       final ExecutorService service, MetricsMaster metricsMaster,
       final TableLockManager tableLockManager,
@@ -241,6 +247,8 @@ public class AssignmentManager {
       conf.getBoolean("hbase.bulk.assignment.waittillallassigned", false);
     this.bulkAssignThresholdRegions = conf.getInt("hbase.bulk.assignment.threshold.regions", 7);
     this.bulkAssignThresholdServers = conf.getInt("hbase.bulk.assignment.threshold.servers", 3);
+    this.bulkPerRegionOpenTimeGuesstimate =
+      conf.getInt("hbase.bulk.assignment.perregion.open.time", 10000);
 
     this.metricsAssignmentManager = new MetricsAssignmentManager();
     this.tableLockManager = tableLockManager;
@@ -386,9 +394,10 @@ public class AssignmentManager {
    * @throws IOException
    * @throws KeeperException
    * @throws InterruptedException
+   * @throws CoordinatedStateException
    */
-  void joinCluster() throws IOException,
-          KeeperException, InterruptedException {
+  void joinCluster()
+  throws IOException, KeeperException, InterruptedException, CoordinatedStateException {
     long startTime = System.currentTimeMillis();
     // Concurrency note: In the below the accesses on regionsInTransition are
     // outside of a synchronization block where usually all accesses to RIT are
@@ -404,8 +413,7 @@ public class AssignmentManager {
     Set<ServerName> deadServers = rebuildUserRegions();
 
     // This method will assign all user regions if a clean server startup or
-    // it will reconstruct master state and cleanup any leftovers from
-    // previous master process.
+    // it will reconstruct master state and cleanup any leftovers from previous master process.
     boolean failover = processDeadServersAndRegionsInTransition(deadServers);
 
     recoverTableInDisablingState();
@@ -416,16 +424,17 @@ public class AssignmentManager {
 
   /**
    * Process all regions that are in transition in zookeeper and also
-   * processes the list of dead servers by scanning the META.
+   * processes the list of dead servers.
    * Used by master joining an cluster.  If we figure this is a clean cluster
    * startup, will assign all user regions.
-   * @param deadServers
-   *          Map of dead servers and their regions. Can be null.
+   * @param deadServers Set of servers that are offline probably legitimately that were carrying
+   * regions according to a scan of hbase:meta. Can be null.
    * @throws IOException
    * @throws InterruptedException
    */
   boolean processDeadServersAndRegionsInTransition(final Set<ServerName> deadServers)
-          throws IOException, InterruptedException {
+  throws KeeperException, IOException, InterruptedException, CoordinatedStateException {
+    // TODO Needed? List<String> nodes = ZKUtil.listChildrenNoWatch(watcher, watcher.assignmentZNode);
     boolean failover = !serverManager.getDeadServers().isEmpty();
     if (failover) {
       // This may not be a failover actually, especially if meta is on this master.
@@ -828,6 +837,18 @@ public class AssignmentManager {
           }
         }
       }
+
+      // wait for assignment completion
+      ArrayList<HRegionInfo> userRegionSet = new ArrayList<HRegionInfo>(regions.size());
+      for (HRegionInfo region: regions) {
+        if (!region.getTable().isSystemTable()) {
+          userRegionSet.add(region);
+        }
+      }
+      if (!waitForAssignment(userRegionSet, true, userRegionSet.size(),
+            System.currentTimeMillis())) {
+        LOG.debug("some user regions are still in transition: " + userRegionSet);
+      }
       LOG.debug("Bulk assigning done for " + destination);
       return true;
     } finally {
@@ -870,12 +891,20 @@ public class AssignmentManager {
         LOG.warn("Server " + server + " region CLOSE RPC returned false for " +
           region.getRegionNameAsString());
       } catch (Throwable t) {
+        long sleepTime = 0;
+        Configuration conf = this.server.getConfiguration();
         if (t instanceof RemoteException) {
           t = ((RemoteException)t).unwrapRemoteException();
         }
-        if (t instanceof NotServingRegionException
+        if (t instanceof RegionServerAbortedException
             || t instanceof RegionServerStoppedException
             || t instanceof ServerNotRunningYetException) {
+          // RS is aborting, we cannot offline the region since the region may need to do WAL
+          // recovery. Until we see  the RS expiration, we should retry.
+          sleepTime = 1 + conf.getInt(RpcClient.FAILED_SERVER_EXPIRY_KEY,
+            RpcClient.FAILED_SERVER_EXPIRY_DEFAULT);
+
+        } else if (t instanceof NotServingRegionException) {
           LOG.debug("Offline " + region.getRegionNameAsString()
             + ", it's not any more on " + server, t);
           regionStates.updateRegionState(region, State.OFFLINE);
@@ -883,27 +912,25 @@ public class AssignmentManager {
         } else if (t instanceof FailedServerException && i < maximumAttempts) {
           // In case the server is in the failed server list, no point to
           // retry too soon. Retry after the failed_server_expiry time
-          try {
-            Configuration conf = this.server.getConfiguration();
-            long sleepTime = 1 + conf.getInt(RpcClient.FAILED_SERVER_EXPIRY_KEY,
-              RpcClient.FAILED_SERVER_EXPIRY_DEFAULT);
-            if (LOG.isDebugEnabled()) {
-              LOG.debug(server + " is on failed server list; waiting "
-                + sleepTime + "ms", t);
-            }
-            Thread.sleep(sleepTime);
-          } catch (InterruptedException ie) {
-            LOG.warn("Failed to unassign "
-              + region.getRegionNameAsString() + " since interrupted", ie);
-            regionStates.updateRegionState(region, State.FAILED_CLOSE);
-            Thread.currentThread().interrupt();
-            return;
+          sleepTime = 1 + conf.getInt(RpcClient.FAILED_SERVER_EXPIRY_KEY,
+          RpcClient.FAILED_SERVER_EXPIRY_DEFAULT);
+          if (LOG.isDebugEnabled()) {
+            LOG.debug(server + " is on failed server list; waiting " + sleepTime + "ms", t);
           }
-        }
-
-        LOG.info("Server " + server + " returned " + t + " for "
-          + region.getRegionNameAsString() + ", try=" + i
-          + " of " + this.maximumAttempts, t);
+       }
+       try {
+         if (sleepTime > 0) {
+           Thread.sleep(sleepTime);
+         }
+       } catch (InterruptedException ie) {
+         LOG.warn("Interrupted unassign " + region.getRegionNameAsString(), ie);
+         Thread.currentThread().interrupt();
+         regionStates.updateRegionState(region, State.FAILED_CLOSE);
+         return;
+       }
+       LOG.info("Server " + server + " returned " + t + " for "
+         + region.getRegionNameAsString() + ", try=" + i
+         + " of " + this.maximumAttempts, t);
       }
     }
     // Run out of attempts
@@ -917,7 +944,7 @@ public class AssignmentManager {
       final HRegionInfo region, final boolean forceNewPlan) {
     RegionState state = regionStates.getRegionState(region);
     if (state == null) {
-      LOG.warn("Assigning a region not in region states: " + region);
+      LOG.warn("Assigning but not in region states: " + region);
       state = regionStates.createRegionState(region);
     }
 
@@ -1004,18 +1031,6 @@ public class AssignmentManager {
 
           regionStates.updateRegionState(region, State.FAILED_OPEN);
           return;
-        }
-        // In case of assignment from EnableTableHandler table state is ENABLING. Any how
-        // EnableTableHandler will set ENABLED after assigning all the table regions. If we
-        // try to set to ENABLED directly then client API may think table is enabled.
-        // When we have a case such as all the regions are added directly into hbase:meta and we call
-        // assignRegion then we need to make the table ENABLED. Hence in such case the table
-        // will not be in ENABLING or ENABLED state.
-        TableName tableName = region.getTable();
-        if (!tableStateManager.isTableState(tableName,
-          TableState.State.ENABLED, TableState.State.ENABLING)) {
-          LOG.debug("Setting table " + tableName + " to ENABLED state.");
-          setEnabledTable(tableName);
         }
         LOG.info("Assigning " + region.getRegionNameAsString() +
             " to " + plan.getDestination().toString());
@@ -1312,7 +1327,7 @@ public class AssignmentManager {
           if (state == null || state.getServerName() == null) {
             // We don't know where the region is, offline it.
             // No need to send CLOSE RPC
-            LOG.warn("Attempting to unassign a region not in RegionStates"
+            LOG.warn("Attempting to unassign a region not in RegionStates "
               + region.getRegionNameAsString() + ", offlined");
             regionOffline(region);
             return;
@@ -1358,33 +1373,74 @@ public class AssignmentManager {
    * If the region is already assigned, returns immediately.  Otherwise, method
    * blocks until the region is assigned.
    * @param regionInfo region to wait on assignment for
+   * @return true if the region is assigned false otherwise.
    * @throws InterruptedException
    */
   public boolean waitForAssignment(HRegionInfo regionInfo)
       throws InterruptedException {
-    while (!regionStates.isRegionOnline(regionInfo)) {
-      if (regionStates.isRegionInState(regionInfo, State.FAILED_OPEN)
-          || this.server.isStopped()) {
-        return false;
-      }
-
-      // We should receive a notification, but it's
-      //  better to have a timeout to recheck the condition here:
-      //  it lowers the impact of a race condition if any
-      regionStates.waitForUpdate(100);
-    }
-    return true;
+    ArrayList<HRegionInfo> regionSet = new ArrayList<HRegionInfo>(1);
+    regionSet.add(regionInfo);
+    return waitForAssignment(regionSet, true, Long.MAX_VALUE);
   }
 
   /**
-   * Assigns the hbase:meta region.
+   * Waits until the specified region has completed assignment, or the deadline is reached.
+   */
+  protected boolean waitForAssignment(final Collection<HRegionInfo> regionSet,
+      final boolean waitTillAllAssigned, final int reassigningRegions,
+      final long minEndTime) throws InterruptedException {
+    long deadline = minEndTime + bulkPerRegionOpenTimeGuesstimate * (reassigningRegions + 1);
+    return waitForAssignment(regionSet, waitTillAllAssigned, deadline);
+  }
+
+  /**
+   * Waits until the specified region has completed assignment, or the deadline is reached.
+   * @param regionSet set of region to wait on. the set is modified and the assigned regions removed
+   * @param waitTillAllAssigned true if we should wait all the regions to be assigned
+   * @param deadline the timestamp after which the wait is aborted
+   * @return true if all the regions are assigned false otherwise.
+   * @throws InterruptedException
+   */
+  protected boolean waitForAssignment(final Collection<HRegionInfo> regionSet,
+      final boolean waitTillAllAssigned, final long deadline) throws InterruptedException {
+    // We're not synchronizing on regionsInTransition now because we don't use any iterator.
+    while (!regionSet.isEmpty() && !server.isStopped() && deadline > System.currentTimeMillis()) {
+      int failedOpenCount = 0;
+      Iterator<HRegionInfo> regionInfoIterator = regionSet.iterator();
+      while (regionInfoIterator.hasNext()) {
+        HRegionInfo hri = regionInfoIterator.next();
+        if (regionStates.isRegionOnline(hri) || regionStates.isRegionInState(hri,
+            State.SPLITTING, State.SPLIT, State.MERGING, State.MERGED)) {
+          regionInfoIterator.remove();
+        } else if (regionStates.isRegionInState(hri, State.FAILED_OPEN)) {
+          failedOpenCount++;
+        }
+      }
+      if (!waitTillAllAssigned) {
+        // No need to wait, let assignment going on asynchronously
+        break;
+      }
+      if (!regionSet.isEmpty()) {
+        if (failedOpenCount == regionSet.size()) {
+          // all the regions we are waiting had an error on open.
+          break;
+        }
+        regionStates.waitForUpdate(100);
+      }
+    }
+    return regionSet.isEmpty();
+  }
+
+  /**
+   * Assigns the hbase:meta region or a replica.
    * <p>
    * Assumes that hbase:meta is currently closed and is not being actively served by
    * any RegionServer.
+   * @param hri TODO
    */
-  public void assignMeta() throws KeeperException {
-    regionStates.updateRegionState(HRegionInfo.FIRST_META_REGIONINFO, State.OFFLINE);
-    assign(HRegionInfo.FIRST_META_REGIONINFO);
+  public void assignMeta(HRegionInfo hri) throws KeeperException {
+    regionStates.updateRegionState(hri, State.OFFLINE);
+    assign(hri);
   }
 
   /**
@@ -1436,15 +1492,13 @@ public class AssignmentManager {
     }
 
     // Generate a round-robin bulk assignment plan
-    Map<ServerName, List<HRegionInfo>> bulkPlan
-      = balancer.roundRobinAssignment(regions, servers);
+    Map<ServerName, List<HRegionInfo>> bulkPlan = balancer.roundRobinAssignment(regions, servers);
     if (bulkPlan == null) {
       throw new IOException("Unable to determine a plan to assign region(s)");
     }
 
     processFavoredNodes(regions);
-    assign(regions.size(), servers.size(),
-      "round-robin=true", bulkPlan);
+    assign(regions.size(), servers.size(), "round-robin=true", bulkPlan);
   }
 
   private void assign(int regions, int totalServers,
@@ -1461,14 +1515,26 @@ public class AssignmentManager {
         LOG.trace("Not using bulk assignment since we are assigning only " + regions +
           " region(s) to " + servers + " server(s)");
       }
+
+      // invoke assignment (async)
+      ArrayList<HRegionInfo> userRegionSet = new ArrayList<HRegionInfo>(regions);
       for (Map.Entry<ServerName, List<HRegionInfo>> plan: bulkPlan.entrySet()) {
         if (!assign(plan.getKey(), plan.getValue()) && !server.isStopped()) {
           for (HRegionInfo region: plan.getValue()) {
             if (!regionStates.isRegionOnline(region)) {
               invokeAssign(region);
+              if (!region.getTable().isSystemTable()) {
+                userRegionSet.add(region);
+              }
             }
           }
         }
+      }
+
+      // wait for assignment completion
+      if (!waitForAssignment(userRegionSet, true, userRegionSet.size(),
+            System.currentTimeMillis())) {
+        LOG.debug("some user regions are still in transition: " + userRegionSet);
       }
     } else {
       LOG.info("Bulk assigning " + regions + " region(s) across "
@@ -1548,10 +1614,8 @@ public class AssignmentManager {
 
   /**
    * Rebuild the list of user regions and assignment information.
-   * <p>
-   * Returns a set of servers that are not found to be online that hosted
-   * some regions.
-   * @return set of servers not online that hosted some regions per meta
+   * Updates regionstates with findings as we go through list of regions.
+   * @return set of servers not online that hosted some regions according to a scan of hbase:meta
    * @throws IOException
    */
   Set<ServerName> rebuildUserRegions() throws
@@ -1565,7 +1629,7 @@ public class AssignmentManager {
             TableState.State.ENABLING);
 
     // Region assignment from META
-    List<Result> results = MetaTableAccessor.fullScanOfMeta(server.getConnection());
+    List<Result> results = MetaTableAccessor.fullScanRegions(server.getConnection());
     // Get any new but slow to checkin region server that joined the cluster
     Set<ServerName> onlineServers = serverManager.getOnlineServers().keySet();
     // Set of offline servers to be returned
@@ -1594,6 +1658,7 @@ public class AssignmentManager {
       HRegionLocation[] locations = rl.getRegionLocations();
       if (locations == null) continue;
       for (HRegionLocation hrl : locations) {
+        if (hrl == null) continue;
         HRegionInfo regionInfo = hrl.getRegionInfo();
         if (regionInfo == null) continue;
         int replicaId = regionInfo.getReplicaId();
@@ -1964,6 +2029,15 @@ public class AssignmentManager {
     return isCarryingRegion(serverName, HRegionInfo.FIRST_META_REGIONINFO);
   }
 
+  public boolean isCarryingMetaReplica(ServerName serverName, int replicaId) {
+    return isCarryingRegion(serverName,
+        RegionReplicaUtil.getRegionInfoForReplica(HRegionInfo.FIRST_META_REGIONINFO, replicaId));
+  }
+
+  public boolean isCarryingMetaReplica(ServerName serverName, HRegionInfo metaHri) {
+    return isCarryingRegion(serverName, metaHri);
+  }
+
   /**
    * Check if the shutdown server carries the specific region.
    * @return whether the serverName currently hosts the region
@@ -1989,15 +2063,15 @@ public class AssignmentManager {
   }
 
   /**
-   * Process shutdown server removing any assignments.
+   * Clean out crashed server removing any assignments.
    * @param sn Server that went down.
    * @return list of regions in transition on this server
    */
-  public List<HRegionInfo> processServerShutdown(final ServerName sn) {
+  public List<HRegionInfo> cleanOutCrashedServerReferences(final ServerName sn) {
     // Clean out any existing assignment plans for this server
     synchronized (this.regionPlans) {
-      for (Iterator <Map.Entry<String, RegionPlan>> i =
-          this.regionPlans.entrySet().iterator(); i.hasNext();) {
+      for (Iterator <Map.Entry<String, RegionPlan>> i = this.regionPlans.entrySet().iterator();
+          i.hasNext();) {
         Map.Entry<String, RegionPlan> e = i.next();
         ServerName otherSn = e.getValue().getDestination();
         // The name will be null if the region is planned for a random assign.
@@ -2015,8 +2089,7 @@ public class AssignmentManager {
       // We need a lock on the region as we could update it
       Lock lock = locker.acquireLock(encodedName);
       try {
-        RegionState regionState =
-          regionStates.getRegionTransitionState(encodedName);
+        RegionState regionState = regionStates.getRegionTransitionState(encodedName);
         if (regionState == null
             || (regionState.getServerName() != null && !regionState.isOnServer(sn))
             || !RegionStates.isOneOfStates(regionState, State.PENDING_OPEN,
@@ -2045,6 +2118,7 @@ public class AssignmentManager {
    * @param plan Plan to execute.
    */
   public void balance(final RegionPlan plan) {
+
     HRegionInfo hri = plan.getRegionInfo();
     TableName tableName = hri.getTable();
     if (tableStateManager.isTableState(tableName,
@@ -2758,7 +2832,12 @@ public class AssignmentManager {
         errorMsg = onRegionClosed(current, hri, serverName);
         break;
       case READY_TO_SPLIT:
-        errorMsg = onRegionReadyToSplit(current, hri, serverName, transition);
+        try {
+          regionStateListener.onRegionSplit(hri);
+          errorMsg = onRegionReadyToSplit(current, hri, serverName, transition);
+        } catch (IOException exp) {
+          errorMsg = StringUtils.stringifyException(exp);
+        }
         break;
       case SPLIT_PONR:
         errorMsg = onRegionSplitPONR(current, hri, serverName, transition);
@@ -2768,6 +2847,13 @@ public class AssignmentManager {
         break;
       case SPLIT_REVERTED:
         errorMsg = onRegionSplitReverted(current, hri, serverName, transition);
+        if (org.apache.commons.lang.StringUtils.isEmpty(errorMsg)) {
+          try {
+            regionStateListener.onRegionSplitReverted(hri);
+          } catch (IOException exp) {
+            LOG.warn(StringUtils.stringifyException(exp));
+          }
+        }
         break;
       case READY_TO_MERGE:
         errorMsg = onRegionReadyToMerge(current, hri, serverName, transition);
@@ -2776,7 +2862,12 @@ public class AssignmentManager {
         errorMsg = onRegionMergePONR(current, hri, serverName, transition);
         break;
       case MERGED:
-        errorMsg = onRegionMerged(current, hri, serverName, transition);
+        try {
+          errorMsg = onRegionMerged(current, hri, serverName, transition);
+          regionStateListener.onRegionMerged(hri);
+        } catch (IOException exp) {
+          errorMsg = StringUtils.stringifyException(exp);
+        }
         break;
       case MERGE_REVERTED:
         errorMsg = onRegionMergeReverted(current, hri, serverName, transition);
@@ -2805,5 +2896,9 @@ public class AssignmentManager {
   public Map<ServerName, List<HRegionInfo>>
     getSnapShotOfAssignment(Collection<HRegionInfo> infos) {
     return getRegionStates().getRegionAssignments(infos);
+  }
+
+  void setRegionStateListener(RegionStateListener listener) {
+    this.regionStateListener = listener;
   }
 }

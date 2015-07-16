@@ -40,10 +40,10 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
-import org.apache.hadoop.hbase.wal.WAL;
-import org.apache.hadoop.hbase.wal.WALFactory;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
+import org.apache.hadoop.hbase.wal.WAL;
+import org.apache.hadoop.hbase.wal.WALFactory;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.util.ToolRunner;
 import org.junit.After;
@@ -54,7 +54,7 @@ import org.junit.experimental.categories.Category;
 /** Test stand alone merge tool that can merge arbitrary regions */
 @Category({MiscTests.class, LargeTests.class})
 public class TestMergeTool extends HBaseTestCase {
-  static final Log LOG = LogFactory.getLog(TestMergeTool.class);
+  private static final Log LOG = LogFactory.getLog(TestMergeTool.class);
   HBaseTestingUtility TEST_UTIL;
 //  static final byte [] COLUMN_NAME = Bytes.toBytes("contents:");
   static final byte [] FAMILY = Bytes.toBytes("contents");
@@ -203,7 +203,7 @@ public class TestMergeTool extends HBaseTestCase {
   private HRegion mergeAndVerify(final String msg, final String regionName1,
     final String regionName2, final WAL log, final int upperbound)
   throws Exception {
-    Merge merger = new Merge(this.conf);
+    Merge merger = new Merge();
     LOG.info(msg);
     LOG.info("fs2=" + this.conf.get("fs.defaultFS"));
     int errCode = ToolRunner.run(this.conf, merger,

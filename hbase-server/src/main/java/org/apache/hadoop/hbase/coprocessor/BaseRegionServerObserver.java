@@ -20,10 +20,12 @@ import java.util.List;
 
 import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.classification.InterfaceStability;
+import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.client.Mutation;
-import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.WALEntry;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.replication.ReplicationEndpoint;
 
 /**
@@ -46,28 +48,28 @@ public class BaseRegionServerObserver implements RegionServerObserver {
   public void stop(CoprocessorEnvironment env) throws IOException { }
 
   @Override
-  public void preMerge(ObserverContext<RegionServerCoprocessorEnvironment> ctx, HRegion regionA,
-      HRegion regionB) throws IOException { }
+  public void preMerge(ObserverContext<RegionServerCoprocessorEnvironment> ctx, Region regionA,
+      Region regionB) throws IOException { }
 
   @Override
-  public void postMerge(ObserverContext<RegionServerCoprocessorEnvironment> c, HRegion regionA,
-      HRegion regionB, HRegion mergedRegion) throws IOException { }
+  public void postMerge(ObserverContext<RegionServerCoprocessorEnvironment> c, Region regionA,
+      Region regionB, Region mergedRegion) throws IOException { }
 
   @Override
   public void preMergeCommit(ObserverContext<RegionServerCoprocessorEnvironment> ctx,
-      HRegion regionA, HRegion regionB, List<Mutation> metaEntries) throws IOException { }
+      Region regionA, Region regionB, List<Mutation> metaEntries) throws IOException { }
 
   @Override
   public void postMergeCommit(ObserverContext<RegionServerCoprocessorEnvironment> ctx,
-      HRegion regionA, HRegion regionB, HRegion mergedRegion) throws IOException { }
+      Region regionA, Region regionB, Region mergedRegion) throws IOException { }
 
   @Override
   public void preRollBackMerge(ObserverContext<RegionServerCoprocessorEnvironment> ctx,
-      HRegion regionA, HRegion regionB) throws IOException { }
+      Region regionA, Region regionB) throws IOException { }
 
   @Override
   public void postRollBackMerge(ObserverContext<RegionServerCoprocessorEnvironment> ctx,
-      HRegion regionA, HRegion regionB) throws IOException { }
+      Region regionA, Region regionB) throws IOException { }
 
   @Override
   public void preRollWALWriterRequest(ObserverContext<RegionServerCoprocessorEnvironment> ctx)
@@ -83,4 +85,11 @@ public class BaseRegionServerObserver implements RegionServerObserver {
     return endpoint;
   }
 
+  @Override
+  public void preReplicateLogEntries(ObserverContext<RegionServerCoprocessorEnvironment> ctx,
+      List<WALEntry> entries, CellScanner cells) throws IOException { }
+
+  @Override
+  public void postReplicateLogEntries(ObserverContext<RegionServerCoprocessorEnvironment> ctx,
+      List<WALEntry> entries, CellScanner cells) throws IOException { }
 }

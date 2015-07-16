@@ -17,6 +17,7 @@
  */
 
 // This file contains protocol buffers that are used for Admin service.
+package hbase.pb;
 
 option java_package = "org.apache.hadoop.hbase.protobuf.generated";
 option java_outer_classname = "AdminProtos";
@@ -70,6 +71,8 @@ message OpenRegionRequest {
   repeated RegionOpenInfo open_info = 1;
   // the intended server for this RPC.
   optional uint64 serverStartCode = 2;
+  // wall clock time from master
+  optional uint64 master_system_time = 5;
 
   message RegionOpenInfo {
     required RegionInfo region = 1;
@@ -88,6 +91,14 @@ message OpenRegionResponse {
     ALREADY_OPENED = 1;
     FAILED_OPENING = 2;
   }
+}
+
+message WarmupRegionRequest {
+
+    required RegionInfo regionInfo = 1;
+}
+
+message WarmupRegionResponse {
 }
 
 /**
@@ -115,11 +126,13 @@ message CloseRegionResponse {
 message FlushRegionRequest {
   required RegionSpecifier region = 1;
   optional uint64 if_older_than_ts = 2;
+  optional bool write_flush_wal_marker = 3; // whether to write a marker to WAL even if not flushed
 }
 
 message FlushRegionResponse {
   required uint64 last_flush_time = 1;
   optional bool flushed = 2;
+  optional bool wrote_flush_wal_marker = 3;
 }
 
 /**
@@ -173,6 +186,8 @@ message MergeRegionsRequest {
   required RegionSpecifier region_a = 1;
   required RegionSpecifier region_b = 2;
   optional bool forcible = 3 [default = false];
+  // wall clock time from master
+  optional uint64 master_system_time = 4;
 }
 
 message MergeRegionsResponse {
@@ -250,6 +265,9 @@ service AdminService {
 
   rpc OpenRegion(OpenRegionRequest)
     returns(OpenRegionResponse);
+
+  rpc WarmupRegion(WarmupRegionRequest)
+    returns(WarmupRegionResponse);
 
   rpc CloseRegion(CloseRegionRequest)
     returns(CloseRegionResponse);

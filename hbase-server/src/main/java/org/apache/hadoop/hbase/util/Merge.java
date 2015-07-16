@@ -43,7 +43,6 @@ import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.io.WritableComparator;
-import org.apache.hadoop.util.GenericOptionsParser;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
@@ -55,26 +54,13 @@ import com.google.common.base.Preconditions;
  */
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.TOOLS)
 public class Merge extends Configured implements Tool {
-  static final Log LOG = LogFactory.getLog(Merge.class);
+  private static final Log LOG = LogFactory.getLog(Merge.class);
   private Path rootdir;
   private volatile MetaUtils utils;
   private TableName tableName;               // Name of table
   private volatile byte [] region1;        // Name of region 1
   private volatile byte [] region2;        // Name of region 2
-  private volatile HRegionInfo mergeInfo;
-
-  /** default constructor */
-  public Merge() {
-    super();
-  }
-
-  /**
-   * @param conf configuration
-   */
-  public Merge(Configuration conf) {
-    this.mergeInfo = null;
-    setConf(conf);
-  }
+  private volatile HRegionInfo mergeInfo = null;
 
   @Override
   public int run(String[] args) throws Exception {
@@ -173,11 +159,11 @@ public class Merge extends Configured implements Tool {
   throws IOException {
     if (info1 == null) {
       throw new IOException("Could not find " + Bytes.toStringBinary(region1) + " in " +
-          Bytes.toStringBinary(meta.getRegionName()));
+          Bytes.toStringBinary(meta.getRegionInfo().getRegionName()));
     }
     if (info2 == null) {
       throw new IOException("Could not find " + Bytes.toStringBinary(region2) + " in " +
-          Bytes.toStringBinary(meta.getRegionName()));
+          Bytes.toStringBinary(meta.getRegionInfo().getRegionName()));
     }
     HRegion merged = null;
     HRegion r1 = HRegion.openHRegion(info1, htd, utils.getLog(info1), getConf());
@@ -226,26 +212,23 @@ public class Merge extends Configured implements Tool {
     meta.delete(delete);
   }
 
-  /*
-   * Parse given arguments including generic arguments and assign table name and regions names.
+  /**
+   * Parse given arguments and assign table name and regions names.
+   * (generic args are handled by ToolRunner.)
    *
    * @param args the arguments to parse
    *
    * @throws IOException
    */
   private int parseArgs(String[] args) throws IOException {
-    GenericOptionsParser parser =
-      new GenericOptionsParser(getConf(), args);
-
-    String[] remainingArgs = parser.getRemainingArgs();
-    if (remainingArgs.length != 3) {
+    if (args.length != 3) {
       usage();
       return -1;
     }
-    tableName = TableName.valueOf(remainingArgs[0]);
+    tableName = TableName.valueOf(args[0]);
 
-    region1 = Bytes.toBytesBinary(remainingArgs[1]);
-    region2 = Bytes.toBytesBinary(remainingArgs[2]);
+    region1 = Bytes.toBytesBinary(args[1]);
+    region2 = Bytes.toBytesBinary(args[2]);
     int status = 0;
     if (notInTable(tableName, region1) || notInTable(tableName, region2)) {
       status = -1;

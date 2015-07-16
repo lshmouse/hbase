@@ -20,6 +20,11 @@
 package org.apache.hadoop.hbase.ipc;
 
 import org.apache.hadoop.hbase.CompatibilityFactory;
+import org.apache.hadoop.hbase.NotServingRegionException;
+import org.apache.hadoop.hbase.RegionTooBusyException;
+import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException;
+import org.apache.hadoop.hbase.exceptions.RegionMovedException;
 import org.apache.hadoop.hbase.testclassification.RPCTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.test.MetricsAssertHelper;
@@ -99,8 +104,10 @@ public class TestRpcMetrics {
 
     mrpc.dequeuedCall(100);
     mrpc.processedCall(101);
+    mrpc.totalCall(102);
     HELPER.assertCounter("queueCallTime_NumOps", 1, serverSource);
     HELPER.assertCounter("processCallTime_NumOps", 1, serverSource);
+    HELPER.assertCounter("totalCallTime_NumOps", 1, serverSource);
 
     mrpc.sentBytes(103);
     mrpc.sentBytes(103);
@@ -111,6 +118,19 @@ public class TestRpcMetrics {
 
     HELPER.assertCounter("sentBytes", 309, serverSource);
     HELPER.assertCounter("receivedBytes", 208, serverSource);
+
+    mrpc.exception(null);
+    HELPER.assertCounter("exceptions", 1, serverSource);
+
+    mrpc.exception(new RegionMovedException(ServerName.parseServerName("localhost:60020"), 100));
+    mrpc.exception(new RegionTooBusyException());
+    mrpc.exception(new OutOfOrderScannerNextException());
+    mrpc.exception(new NotServingRegionException());
+    HELPER.assertCounter("exceptions.RegionMovedException", 1, serverSource);
+    HELPER.assertCounter("exceptions.RegionTooBusyException", 1, serverSource);
+    HELPER.assertCounter("exceptions.OutOfOrderScannerNextException", 1, serverSource);
+    HELPER.assertCounter("exceptions.NotServingRegionException", 1, serverSource);
+    HELPER.assertCounter("exceptions", 5, serverSource);
   }
 
 }
